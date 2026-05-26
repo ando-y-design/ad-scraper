@@ -1,0 +1,880 @@
+import html as _html
+import json
+import logging
+import re
+import time
+from concurrent.futures import ThreadPoolExecutor, as_completed
+from urllib.parse import urlparse
+
+import requests
+from bs4 import BeautifulSoup
+
+from processors.normalizer import get_base_domain, normalize_url
+from processors.phone_finder import extract_phone, extract_all_phones, is_freephone
+
+_HEADERS = {
+    'User-Agent': (
+        'Mozilla/5.0 (Windows NT 10.0; Win64; x64) '
+        'AppleWebKit/537.36 (KHTML, like Gecko) '
+        'Chrome/124.0.0.0 Safari/537.36'
+    ),
+    'Accept-Language': 'ja-JP,ja;q=0.9,en-US;q=0.8',
+    'Accept': 'text/html,application/xhtml+xml,application/xml;q=0.9,*/*;q=0.8',
+}
+
+TOKUTEI_PATHS = [
+    '/tokutei', '/tokusho', '/tokushoho', '/legal', '/law', '/scta',
+    '/tokuteishoho', '/kaijijikou', '/company/legal', '/about/legal',
+    '/info/legal', '/terms/tokutei', '/tokutei.html', '/tokusho.html',
+    '/legal.html', '/law.html', '/company/tokutei', '/company/tokusho',
+    '/specified-commercial-transactions', '/act',
+    '/tokutei-shoho', '/shougyou', '/teishi',
+    '/legal/tokutei', '/info/tokutei', '/policy/legal',
+    '/service/legal', '/help/legal', '/support/legal',
+    '/terms/legal', '/company/law', '/corporate/legal',
+    '/kiyaku', '/terms', '/tos',
+    '/tokushohou', '/tokuteishouho',
+    '/company/specified-commercial-transactions',
+    '/pages/tokutei', '/pages/legal', '/pages/law',
+    '/static/tokutei', '/static/legal',
+    '/lp/tokutei', '/lp/legal',
+    '/doc/tokutei', '/doc/legal',
+    '/help/tokutei', '/support/tokutei',
+    '/commercial', '/commerce',
+    '/notation', '/disclosure',
+    '/corporate/law',
+    # trailing slash variants
+    '/tokutei/', '/legal/', '/law/', '/tokusho/',
+    # additional common paths
+    '/specified-commercial-transactions-law',
+    '/tokutei-shoho-ni-motozuku-hyoki',
+    '/tokuteishouhohou',
+    '/company/tokutei-shoho',
+    '/about/tokutei',
+    '/tokutei_shoho',
+    '/legal_notice',
+    '/legalnotice',
+    '/legal-notice',
+    '/tokushohou.html',
+    '/commerce.html',
+    '/notation.html',
+    '/act.html',
+    # パターン追加（欠落カバー）
+    '/company-info', '/companyinfo',
+    '/contact-info', '/contactinfo',
+    '/about-company', '/aboutcompany',
+    '/company-profile', '/companyprofile',
+    '/info/company', '/info/contact',
+    '/page/tokutei', '/page/legal',
+    '/content/tokutei', '/content/legal',
+    '/privacy', '/privacy.html',
+    '/agreement', '/agreement.html',
+    '/特商法', '/特定商取引',
+    # 追加: 一般的なルール・規約パターン
+    '/rule', '/rules', '/regulations',
+    '/terms-of-service', '/tos.html',
+    '/company/rules', '/legal/rules',
+]
+
+COMPANY_PATHS = [
+    '/company', '/about', '/corporate', '/kaisha', '/gaiyou',
+    '/company/profile', '/about/company', '/corporate/profile',
+    '/aboutus', '/company.html', '/about.html', '/corporate.html',
+    '/info', '/profile',
+    '/company/about', '/about/us', '/our-company',
+    '/overview', '/outline', '/kaisha-gaiyou',
+    '/company/overview', '/corporate/overview',
+    '/company/info', '/corporate/info',
+    '/about/profile', '/about/overview',
+    '/kaisha/gaiyou', '/kaisha/profile',
+    '/company/', '/about/', '/corporate/',
+    # パターン追加（欠落カバー）
+    '/company-info', '/companyinfo',
+    '/company-profile', '/companyprofile',
+    '/about-us', '/aboutus',
+    '/our-company', '/ourcompany',
+    '/team', '/team.html',
+    '/page/company', '/page/about',
+    '/content/company', '/content/about',
+]
+
+# 電話番号が記載されやすいお問い合わせ・サポートページ
+CONTACT_PATHS = [
+    '/contact', '/contact/', '/contact.html',
+    '/inquiry', '/inquiry/', '/inquiry.html',
+    '/contact-us', '/contactus', '/contact_us',
+    '/support', '/support/contact', '/support/',
+    '/info/contact', '/company/contact',
+    '/access', '/access.html', '/access/',
+    # パターン追加（欠落カバー）
+    '/contact-info', '/contactinfo',
+    '/contact-form', '/contactform',
+    '/お問い合わせ', '/問い合わせ',
+    '/page/contact', '/content/contact',
+]
+
+_COMPANY_LABEL_PATTERNS = [
+    # ラベル: 値 が同一行（半角・全角コロン対応）
+    r'(?:販売業者|運営会社|事業者名|法人名|会社名|商号|企業名|提供者|サービス提供者|事業者|販売者|運営事業者|運営主体|運営元|提供会社|サービス提供会社)\s*[：:\uff1a]\s*([^\n：:]{2,80})',
+    # ラベルの次の行に値（テーブル形式）
+    r'(?:販売業者|運営会社|事業者名|法人名|会社名|商号|企業名|提供者|サービス提供者|事業者|販売者|運営事業者|運営主体|運営元|提供会社|サービス提供会社)\s*\n\s*([^\n：:]{2,80})',
+    # Copyright行からの抽出（慎重に使う）
+    r'(?:Copyright|©)\s*(?:\d{4}[年\-\s]*)?(?:\d{4}[年\-\s]*)?\s*([^\n,，\.]{4,50}?)(?:\s+All\s+Rights|\s*$)',
+]
+
+_COMPANY_TABLE_LABELS = {
+    '販売業者', '運営会社', '事業者名', '法人名', '会社名', '商号', '企業名',
+    '提供者', 'サービス提供者', '運営者', '発行者', '管理者',
+    '事業者', '販売者', '運営事業者', '運営主体', '運営元',
+    '提供会社', 'サービス提供会社',
+}
+
+_PHONE_LABEL_PATTERNS = [
+    r'(?:TEL|Tel|電話|お電話|電話番号|連絡先)\s*[：:\s]\s*([\d\-\(\)\s０-９]{7,20})',
+]
+
+
+def _fetch(url: str, timeout: int = 15, max_retries: int = 3) -> BeautifulSoup | None:
+    """URLをフェッチして BeautifulSoup を返す。リトライロジック+エンコーディング改善付き。
+    タイムアウト15s・リトライ3回: 特商法ページの遅いサーバーに対応。
+    """
+    last_error = None
+    for attempt in range(max_retries):
+        try:
+            resp = requests.get(url, headers=_HEADERS, timeout=timeout, allow_redirects=True)
+            if resp.status_code == 200:
+                # エンコーディング検出: 明示的なcharset > apparent_encoding > utf-8
+                if 'charset=' in resp.headers.get('content-type', '').lower():
+                    resp.encoding = resp.encoding
+                else:
+                    resp.encoding = resp.apparent_encoding or 'utf-8'
+                
+                try:
+                    soup = BeautifulSoup(resp.text, 'lxml')
+                    return soup
+                except Exception as parse_error:
+                    # lxml失敗時は html.parser にフォールバック
+                    try:
+                        soup = BeautifulSoup(resp.text, 'html.parser')
+                        return soup
+                    except Exception:
+                        last_error = f'Parse failed: {type(parse_error).__name__}'
+                        if attempt < max_retries - 1:
+                            time.sleep(1.0 * (attempt + 1))
+            elif resp.status_code == 404:
+                # 404 は確定的な失敗、リトライしない
+                return None
+            else:
+                # その他のエラーステータスはリトライ
+                last_error = f'HTTP {resp.status_code}'
+                if attempt < max_retries - 1:
+                    time.sleep(1.0 * (attempt + 1))
+        except requests.Timeout:
+            last_error = 'Timeout'
+            if attempt < max_retries - 1:
+                time.sleep(1.0 * (attempt + 1))
+        except requests.ConnectionError:
+            last_error = 'ConnectionError'
+            if attempt < max_retries - 1:
+                time.sleep(1.0 * (attempt + 1))
+        except Exception as e:
+            last_error = str(type(e).__name__)
+            if attempt < max_retries - 1:
+                time.sleep(1.0 * (attempt + 1))
+    
+    return None
+
+
+_LEGAL_ENTITY_RE = re.compile(
+    r'(?:株式会社|有限会社|合同会社|合資会社|合名会社|一般社団法人|公益社団法人|'
+    r'一般財団法人|公益財団法人|医療法人|学校法人|弁護士法人|税理士法人|司法書士法人|'
+    r'社会福祉法人|NPO法人|特定非営利活動法人|協同組合|農業協同組合|'
+    r'Inc\.?|Corp\.?|Ltd\.?|LLC|GmbH|ホールディングス)'
+)
+
+# 会社名の後に続く説明文・住所をトリムする（スペース区切りで最初のトークンのみ取る）
+# 前株: 「有限会社○○ 説明文」→「有限会社○○」
+_MAEKAB_TRIM_RE = re.compile(
+    r'^((?:株式会社|有限会社|合同会社|合資会社|合名会社|一般社団法人|公益社団法人|'
+    r'一般財団法人|公益財団法人|医療法人|学校法人|弁護士法人|税理士法人|司法書士法人|'
+    r'社会福祉法人|NPO法人|特定非営利活動法人|協同組合|農業協同組合)\S+)'
+)
+# 後株: 「○○株式会社 説明文」→「○○株式会社」
+_ATOKAB_TRIM_RE = re.compile(
+    r'^(\S+(?:株式会社|有限会社|合同会社|合資会社|合名会社|一般社団法人|公益社団法人|'
+    r'一般財団法人|公益財団法人|医療法人|学校法人|弁護士法人|税理士法人|司法書士法人|'
+    r'社会福祉法人|NPO法人|特定非営利活動法人|協同組合|農業協同組合))'
+)
+# カッコ内の会社名を抽出: 「サンテク(株式会社山陽テクノサービス)」→「株式会社山陽テクノサービス」
+_PAREN_COMPANY_RE = re.compile(
+    r'[（(]('
+    r'(?:株式会社|有限会社|合同会社|合資会社|合名会社|一般社団法人|公益社団法人|'
+    r'一般財団法人|公益財団法人|医療法人|学校法人|弁護士法人|税理士法人|司法書士法人|'
+    r'社会福祉法人|NPO法人|特定非営利活動法人|協同組合|農業協同組合)'
+    r'[^）)]+)'
+    r'[）)]'
+)
+# 前置き説明を除去: 「内装工事の株式会社○○」「説明 株式会社○○」→「株式会社○○」
+_LEADING_DESC_RE = re.compile(
+    r'^.+?(?:の|[ 　])('
+    r'(?:株式会社|有限会社|合同会社|合資会社|合名会社|一般社団法人|公益社団法人|'
+    r'一般財団法人|公益財団法人|医療法人|学校法人|弁護士法人|税理士法人|司法書士法人|'
+    r'社会福祉法人|NPO法人|特定非営利活動法人|協同組合|農業協同組合)'
+    r'\S+)'
+)
+# 全角括弧【】〔〕などを除去: 「フランスベッド販売株式会社【公式通販サイト】」→「フランスベッド販売株式会社」
+_BRACKET_STRIP_RE = re.compile(r'[【〔《〈「][^】〕》〉」]*[】〕》〉」]')
+# 英語法人格で後続テキストを切る: 「Biophilia Inc. 説明文」→「Biophilia Inc.」
+_ENGLISH_CORP_TRIM_RE = re.compile(
+    r'^(.+?(?:Inc\.?|Corp\.?|Ltd\.?|LLC|GmbH|Co\.,?\s*Ltd\.?))(?=\s)'
+)
+
+# 法人格略称 → 正式表記マッピング
+_CORP_ABBREV = [
+    ('㈱',     '株式会社'),
+    ('（株）', '株式会社'),
+    ('(株)',   '株式会社'),
+    ('㈲',     '有限会社'),
+    ('（有）', '有限会社'),
+    ('(有)',   '有限会社'),
+    ('（合）', '合同会社'),
+    ('(合)',   '合同会社'),
+]
+
+
+def _expand_corp_abbrev(name: str) -> str:
+    """略称法人格（㈱ / (株) 等）を正式形に展開し、前株を後株に統一する。"""
+    for abbrev, full in _CORP_ABBREV:
+        if abbrev not in name:
+            continue
+        if name.startswith(abbrev):
+            # 前株: "㈱○○" → "株式会社○○"
+            name = full + name[len(abbrev):].strip()
+        else:
+            # 後株・中間: "○○(株)" → "○○株式会社"
+            name = name.replace(abbrev, full)
+    return name.strip()
+
+# ゴミ判定パターン（先頭一致）
+_GARBAGE_RE = re.compile(
+    r'^(?:'
+    r'©[︎️]?|︎|️|\(C\)|Copyright|\d{4}|【|「|http|www\.'
+    r'|All Rights|Privacy|Terms|Policy'
+    r'|iPhone|Android|PC|お問い合わせ|ショッピング|カート|ログイン|メニュー'
+    r'|企業情報|会社情報|サービス情報|運営情報|運営者情報'
+    r'|本利用規約|本規約|利用規約|以下|募集代理店'
+    r'|PR\s*[：:]|広告'
+    r'|運営会社[\/／]|販売業者[：:]|事業者名[：:]'
+    r')',
+    re.IGNORECASE
+)
+
+# 「株式会社」だけで終わる不完全な会社名を拒否
+_INCOMPLETE_RE = re.compile(
+    r'^(?:株式会社|有限会社|合同会社|合資会社|医療法人|一般社団法人|NPO法人)$'
+)
+
+
+def _unescape_all_entities(text: str) -> str:
+    """全HTMLエンティティ（名前・数字・16進）を確実に処理"""
+    # Step 1: 名前付きエンティティ（&nbsp; など）
+    text = _html.unescape(text)
+    
+    # Step 2: 10進数エンティティ（&#123; など）
+    text = re.sub(r'&#(\d+);', lambda m: chr(int(m.group(1))), text)
+    
+    # Step 3: 16進数エンティティ（&#x1f; など）
+    text = re.sub(r'&#x([0-9a-fA-F]+);', lambda m: chr(int(m.group(1), 16)), text)
+    
+    # Step 4: 残存する不完全なエンティティを除去（セミコロン忘れ等）
+    text = re.sub(r'&[a-zA-Z]{2,8}(?!;)', '', text)
+    
+    return text
+
+
+def _is_japanese_company(name: str) -> bool:
+    """日本語法人名（漢字・ひらがな・カタカナを含む）かどうか"""
+    return bool(
+        re.search(r'[぀-鿿＀-￯]', name)
+        and _LEGAL_ENTITY_RE.search(name)
+    )
+
+
+def _normalize_name(name: str) -> str:
+    """バリデーション前の正規化: HTMLエンティティ解除・空白統一・ゴミ除去"""
+    name = _unescape_all_entities(name)
+    # 著作権・登録商標記号＋バリエーションセレクタ（©︎ の U+FE0E / U+FE0F）を除去
+    name = re.sub(r'[©℗®™℠][︎️]?', '', name)
+    name = re.sub(r'[︎️]', '', name)  # 残存バリエーションセレクタ
+    # 全角括弧【】〔〕などの説明書き除去: 「会社名【公式通販サイト】」→「会社名」
+    name = _BRACKET_STRIP_RE.sub('', name).strip()
+    # 法人格略称を正式形に展開
+    name = _expand_corp_abbrev(name)
+    name = re.sub(r'[　\s]+', ' ', name).strip()
+    # コロン区切りから法人名部分を抽出: 「サービス名:会社名」→「会社名」
+    if ('：' in name or ':' in name) and _LEGAL_ENTITY_RE.search(name):
+        parts = re.split(r'[：:]', name)
+        for part in reversed(parts):
+            part = part.strip()
+            if _LEGAL_ENTITY_RE.search(part) and len(part) >= 4:
+                name = part
+                break
+    # カッコ内に会社名があれば抽出: 「サンテク(株式会社山陽テクノサービス)」→「株式会社山陽テクノサービス」
+    m = _PAREN_COMPANY_RE.search(name)
+    if m:
+        name = m.group(1).strip()
+    # 前置き説明を除去: 「内装工事の株式会社○○」「説明 株式会社○○」→「株式会社○○」
+    m = _LEADING_DESC_RE.match(name)
+    if m:
+        name = m.group(1)
+    # 会社名の後に続く説明文・住所・キャッチコピーを除去
+    if ' ' in name:
+        # 英語法人格: 「Biophilia Inc. 説明文」→「Biophilia Inc.」
+        if re.search(r'Inc\.?|Corp\.?|Ltd\.?|LLC|GmbH', name):
+            m = _ENGLISH_CORP_TRIM_RE.match(name)
+            if m and m.end() < len(name):
+                return m.group(1)
+        # 前株: 「有限会社○○ 説明文」→「有限会社○○」
+        m = _MAEKAB_TRIM_RE.match(name)
+        if m and m.end() < len(name):
+            return m.group(1)
+        # 後株: 「○○株式会社 説明文」→「○○株式会社」
+        m = _ATOKAB_TRIM_RE.match(name)
+        if m and m.end() < len(name):
+            return m.group(1)
+    return name
+
+
+def _is_valid_company(name: str) -> bool:
+    """厳格バリデーション: 法人形態の明記を必須とする（ラベルなしコンテキスト用）"""
+    name = _normalize_name(name)
+    if not name or len(name) < 4 or len(name) > 60:
+        return False
+    # セパレータ文字（ページタイトルやスローガンの特徴）
+    if '|' in name or '｜' in name or '/' in name or '／' in name:
+        return False
+    if '･' in name:  # 半角中黒: 「A･B･C」型スローガンを排除
+        return False
+    if '。' in name or '、' in name or '（以下' in name or '（旧' in name:
+        return False
+    if re.search(r'（.{3,}）', name):
+        return False
+    # 株式会社が2回以上 = 会社設立サービスのページタイトル
+    if name.count('株式会社') >= 2 or name.count('有限会社') >= 2:
+        return False
+    # 会社設立サービス・スローガン系
+    if re.search(r'会社設立|起業(する|なら|を)', name):
+        return False
+    # 文節を示す助詞・動詞（文章であって社名でない）
+    if re.search(r'[ぁ-ん]なら|なら[ぁ-ん]|として|のため|をお', name):
+        return False
+    if _GARBAGE_RE.search(name):
+        return False
+    if _INCOMPLETE_RE.match(name):
+        return False
+    if not _LEGAL_ENTITY_RE.search(name):
+        return False
+    return True
+
+
+def _is_valid_company_labeled(name: str) -> bool:
+    """ラベル直後用バリデーション: 法人形態必須"""
+    name = _normalize_name(name)
+    name_clean = re.sub(r'\s+', '', name)
+    if not name_clean or len(name_clean) < 2 or len(name) > 80:
+        return False
+    if '|' in name or '｜' in name:
+        return False
+    if '･' in name:
+        return False
+    if '。' in name or '、' in name or '（以下' in name or '（旧' in name:
+        return False
+    if re.search(r'（.{3,}）', name):
+        return False
+    if name.count('株式会社') >= 2 or name.count('有限会社') >= 2:
+        return False
+    if re.search(r'会社設立|起業(する|なら|を)', name):
+        return False
+    if _GARBAGE_RE.search(name):
+        return False
+    if _INCOMPLETE_RE.match(name):
+        return False
+    if re.match(r'^[\d\s\-\(\)\+]+$', name):
+        return False
+    if re.search(r'https?://', name):
+        return False
+    if not _LEGAL_ENTITY_RE.search(name):
+        return False
+    return True
+
+
+def _extract_from_json_ld(soup: BeautifulSoup) -> tuple[str | None, str | None]:
+    """JSON-LD 構造化データから会社名・電話番号を抽出する（SPA対策）。
+    @graph 構造にも対応。"""
+    company = None
+    phone = None
+    for script in soup.find_all('script', type='application/ld+json'):
+        try:
+            data = json.loads(script.string or '')
+            items = data if isinstance(data, list) else [data]
+
+            # @graph 展開
+            expanded: list = []
+            for item in items:
+                if isinstance(item, dict) and '@graph' in item:
+                    graph = item['@graph']
+                    if isinstance(graph, list):
+                        expanded.extend(graph)
+                    else:
+                        expanded.append(item)
+                else:
+                    expanded.append(item)
+            items = expanded
+
+            for item in items:
+                if not isinstance(item, dict):
+                    continue
+                type_val = item.get('@type', '')
+                if isinstance(type_val, list):
+                    type_val = ' '.join(type_val)
+                if any(t in type_val for t in ('Organization', 'Corporation', 'LocalBusiness', 'Company')):
+                    name = item.get('legalName', '') or item.get('name', '')
+                    if not company and name:
+                        # JSON-LDは信頼できるソースのため、labeled validationも許可
+                        if _is_valid_company(name) or _is_valid_company_labeled(name):
+                            company = name
+                    tel = item.get('telephone', '')
+                    if not phone and tel:
+                        phone = extract_phone(str(tel))
+        except Exception:
+            continue
+    return company, phone
+
+
+def _extract_from_meta(soup: BeautifulSoup) -> str | None:
+    """og:site_name / application-name メタタグから会社名候補を取得する。"""
+    for attrs in [
+        {'property': 'og:site_name'},
+        {'name': 'application-name'},
+        {'name': 'author'},
+    ]:
+        tag = soup.find('meta', attrs=attrs)
+        if not tag:
+            continue
+        content = (tag.get('content') or '').strip()
+        if not content:
+            continue
+        if _is_valid_company(content):
+            return content
+        # site_name はラベルなしだが構造化メタデータとして信頼度が高い
+        if attrs.get('property') == 'og:site_name' and _is_valid_company_labeled(content):
+            return content
+    return None
+
+
+def _extract_company_from_table(soup: BeautifulSoup) -> str | None:
+    """th/dt → td/dd のテーブル構造から会社名を取得する。
+    複数のHTML構造パターンに対応:
+      1. <th>ラベル</th><td>値</td>（同一tr内の兄弟）
+      2. <tr><th>ラベル</th></tr><tr><td>値</td></tr>（次行）
+      3. <dt>ラベル</dt><dd>値</dd>（定義リスト）
+    """
+    for label_tag in soup.find_all(['th', 'dt']):
+        label_text = label_tag.get_text(strip=True)
+        if not any(kw in label_text for kw in _COMPANY_TABLE_LABELS):
+            continue
+        if len(label_text) > 30:
+            continue
+
+        value_tag = None
+
+        # パターン1: 直接の次兄弟 (th → td, dt → dd)
+        value_tag = label_tag.find_next_sibling(['td', 'dd'])
+
+        if not value_tag:
+            # パターン2: 同一tr内で後続のtdを探す
+            parent = label_tag.parent
+            if parent and parent.name == 'tr':
+                tds = parent.find_all('td')
+                if tds:
+                    value_tag = tds[0]
+
+        if not value_tag:
+            # パターン3: 次のtr行のtd
+            parent_tr = label_tag.find_parent('tr')
+            if parent_tr:
+                next_tr = parent_tr.find_next_sibling('tr')
+                if next_tr:
+                    value_tag = next_tr.find(['td', 'dd'])
+
+        if value_tag:
+            candidate = value_tag.get_text(separator=' ', strip=True)
+            if _is_valid_company(candidate):
+                return candidate
+            if _is_valid_company_labeled(candidate):
+                return candidate
+
+    return None
+
+
+def _extract_company_from_divs(soup: BeautifulSoup) -> str | None:
+    """div/p/span のラベル-値ペア構造から会社名を抽出する。
+    CSS flexbox/gridで作られた疑似テーブルに対応。"""
+    for label_tag in soup.find_all(['div', 'p', 'span', 'li']):
+        label_text = label_tag.get_text(strip=True)
+        if not any(kw in label_text for kw in _COMPANY_TABLE_LABELS):
+            continue
+        # 30文字以内のラベル要素を処理（緩めに設定）
+        if len(label_text) > 30:
+            continue
+
+        # パターン1: 次の兄弟要素が値
+        next_tag = label_tag.find_next_sibling()
+        if next_tag:
+            candidate = next_tag.get_text(separator=' ', strip=True)
+            if _is_valid_company_labeled(candidate):
+                return candidate
+
+        # パターン2: 親要素のテキストをラベル/値に分割
+        parent = label_tag.parent
+        if parent:
+            parent_text = parent.get_text(separator='\n', strip=True)
+            lines = [ln.strip() for ln in parent_text.split('\n') if ln.strip()]
+            for i, line in enumerate(lines):
+                if any(kw in line for kw in _COMPANY_TABLE_LABELS) and i + 1 < len(lines):
+                    candidate = lines[i + 1]
+                    if _is_valid_company_labeled(candidate):
+                        return candidate
+
+    return None
+
+
+def _extract_company_from_soup(soup: BeautifulSoup) -> str | None:
+    # JSON-LD（SPA含む静的埋め込み）を最優先
+    company_ld, _ = _extract_from_json_ld(soup)
+    if company_ld:
+        return company_ld
+    # テーブル構造（th/dt）
+    result = _extract_company_from_table(soup)
+    if result:
+        return result
+    # div/p/span のCSS疑似テーブル構造
+    result = _extract_company_from_divs(soup)
+    if result:
+        return result
+    # テキストパターンにフォールバック
+    text = soup.get_text(separator='\n', strip=True)
+    for pattern in _COMPANY_LABEL_PATTERNS:
+        m = re.search(pattern, text, re.MULTILINE)
+        if m:
+            candidate = m.group(1).strip()
+            if _is_valid_company(candidate):
+                return candidate
+            if 'Copyright' not in pattern and _is_valid_company_labeled(candidate):
+                return candidate
+    return None
+
+
+def _search_phone_by_company_name(company: str) -> str | None:
+    """
+    会社名でYahoo検索し、SERPに表示された電話番号をフォールバック取得する。
+    LP内に電話番号がない（フォーム誘導型・JS依存型サイト等）場合に有効。
+    requests経由のため Playwright ブロックと独立して動作する。
+    """
+    try:
+        from urllib.parse import quote
+        query = quote(f'{company} 電話番号')
+        url = f'https://search.yahoo.co.jp/search?p={query}&ei=UTF-8'
+        soup = _fetch(url, timeout=10, max_retries=1)
+        if not soup:
+            return None
+        # ① tel: リンクをSERP内から優先取得（Yahooはリッチリザルトにtel:を埋め込む）
+        for a in soup.find_all('a', href=True):
+            href = a.get('href', '')
+            if href.lower().startswith('tel:'):
+                phone = extract_phone(href)
+                if phone:
+                    logging.debug(f'[Finder] Yahoo SERP tel:リンクで電話番号取得: {company} → {phone}')
+                    return phone
+        # ② テキスト全体から電話番号抽出
+        text = soup.get_text(separator='\n', strip=True)
+        phone = extract_phone(text)
+        if phone:
+            logging.debug(f'[Finder] Yahoo SERPテキストで電話番号取得: {company} → {phone}')
+        return phone
+    except Exception as e:
+        logging.debug(f'[Finder] Yahoo検索フォールバック失敗: {e}')
+        return None
+
+
+def _extract_phones_from_soup(soup: BeautifulSoup) -> list[str]:
+    """ページから全ての有効な電話番号を優先順位順で返す。"""
+    seen: set[str] = set()
+    result: list[str] = []
+
+    def _add(phone: str | None):
+        if phone and phone not in seen:
+            seen.add(phone)
+            result.append(phone)
+
+    # 1. tel: リンク（最も確実）
+    for a in soup.find_all('a', href=True):
+        href = a.get('href', '')
+        if href.lower().startswith('tel:'):
+            _add(extract_phone(href))
+
+    # 2. ラベル付き電話番号
+    text = soup.get_text(separator='\n', strip=True)
+    for pattern in _PHONE_LABEL_PATTERNS:
+        for m in re.finditer(pattern, text, re.MULTILINE):
+            for p in extract_all_phones(m.group(1)):
+                _add(p)
+
+    # 3. テキスト全体
+    for p in extract_all_phones(text):
+        _add(p)
+
+    return result
+
+
+def _extract_phone_from_soup(soup: BeautifulSoup) -> str | None:
+    phones = _extract_phones_from_soup(soup)
+    return phones[0] if phones else None
+
+
+def _fetch_and_extract(url: str) -> tuple[str | None, str | None]:
+    """1URLを取得して (company, phone) を返す。失敗時は (None, None)"""
+    soup = _fetch(url)
+    if soup is None:
+        return None, None
+    c_ld, p_ld = _extract_from_json_ld(soup)
+    c = c_ld or _extract_company_from_soup(soup)
+    p = p_ld or _extract_phone_from_soup(soup)
+    return c, p
+
+
+def _parallel_search(
+    urls: list[str],
+    need_company: bool,
+    need_phone: bool,
+    max_workers: int = 3,
+    timeout: float | None = None,
+) -> tuple[str | None, str | None]:
+    """
+    URLリストを並列フェッチして最初に見つかった company/phone を返す。
+    全URL並列投入 → as_completed で早期リターン。
+    目的のデータが揃った時点で残りのfutureをキャンセルして即返却。
+    timeout: as_completed に渡す秒数。超過した場合は取得済みの結果で早期返却。
+    """
+    company: str | None = None
+    phone: str | None = None
+
+    executor = ThreadPoolExecutor(max_workers=max_workers)
+    try:
+        futures = {executor.submit(_fetch_and_extract, u): u for u in urls}
+        try:
+            for future in as_completed(futures, timeout=timeout):
+                try:
+                    c, p = future.result()
+                except Exception:
+                    continue
+                if c and need_company and not company:
+                    company = c
+                if p and need_phone and not phone:
+                    phone = p
+                if (not need_company or company) and (not need_phone or phone):
+                    break
+        except TimeoutError:
+            pass  # タイムアウト時は取得済みの結果で返却
+    finally:
+        executor.shutdown(wait=False, cancel_futures=True)
+
+    return company, phone
+
+
+def find_company_info(
+    lp_url: str,
+    meta_company: str | None = None,
+    nta_api_key: str | None = None,
+) -> tuple[str | None, str | None, str | None]:
+    """(company, best_phone, all_phones_str) を返す。all_phones_str は ' / ' 区切りの全番号。"""
+    import threading
+    
+    result_container = [None, None, None]
+    
+    def _execute():
+        try:
+            if not lp_url:
+                return
+            
+            try:
+                from urllib.parse import urlparse
+                parsed = urlparse(lp_url)
+                origin = f'{parsed.scheme}://{parsed.netloc}'
+            except Exception:
+                return
+
+            if not origin or '://' not in origin:
+                return
+
+            company: str | None = None
+            phone: str | None = None
+            _phone_seen: set[str] = set()
+            _extra_phones: list[str] = []
+
+            def _record_phones(phones: list[str]):
+                for p in phones:
+                    if p and p not in _phone_seen:
+                        _phone_seen.add(p)
+                        _extra_phones.append(p)
+
+            # ① 特商法ページ（5秒、リトライなし）
+            try:
+                tokutei_urls = [origin + p for p in TOKUTEI_PATHS]
+                c1, p1 = _parallel_search(
+                    tokutei_urls,
+                    need_company=True,
+                    need_phone=True,
+                    max_workers=3,
+                    timeout=5.0,
+                )
+                if c1:
+                    company = _normalize_name(c1)
+                if p1:
+                    _record_phones([p1])
+                    phone = p1
+                if company:
+                    logging.debug(f'特商法ページで取得: {origin}')
+                    if company and phone and not is_freephone(phone):
+                        result_container[:] = [company.strip(), phone, ' / '.join(_extra_phones) or None]
+                        return
+            except Exception as e:
+                logging.debug(f'特商法ページエラー: {e}')
+
+            # ② 会社概要ページ（5秒）
+            if not company:
+                try:
+                    company_urls = [origin + p for p in COMPANY_PATHS]
+                    c2, p2 = _parallel_search(
+                        company_urls,
+                        need_company=True,
+                        need_phone=not phone,
+                        max_workers=3,
+                        timeout=5.0,
+                    )
+                    if c2 and (not company or not _is_japanese_company(company)):
+                        company = _normalize_name(c2)
+                    if p2 and not phone:
+                        _record_phones([p2])
+                        phone = p2
+                    if company:
+                        logging.debug(f'会社概要ページで取得: {origin}')
+                        if company and phone and not is_freephone(phone):
+                            result_container[:] = [company.strip(), phone, ' / '.join(_extra_phones) or None]
+                            return
+                except Exception as e:
+                    logging.debug(f'会社概要ページエラー: {e}')
+
+            # ③ お問い合わせページ（5秒）
+            if not phone or is_freephone(phone):
+                try:
+                    contact_urls = [origin + p for p in CONTACT_PATHS]
+                    c3, p3 = _parallel_search(
+                        contact_urls,
+                        need_company=not company,
+                        need_phone=True,
+                        max_workers=2,
+                        timeout=5.0,
+                    )
+                    if c3 and not company:
+                        company = _normalize_name(c3)
+                    if p3:
+                        _record_phones([p3])
+                        if not phone or is_freephone(phone):
+                            phone = p3
+                            logging.debug(f'contactページから直番取得: {origin}')
+                except Exception as e:
+                    logging.debug(f'contactページエラー: {e}')
+
+            # ④ LPページ自体（5秒のみ）
+            if not company:
+                try:
+                    soup = _fetch(lp_url, timeout=5.0)
+                    if soup:
+                        all_text = soup.get_text(separator='\n', strip=True)[:30000]
+
+                        c_ld, p_ld = _extract_from_json_ld(soup)
+                        if c_ld:
+                            company = _normalize_name(c_ld)
+                        if not phone and p_ld:
+                            phone = p_ld
+                            _record_phones([p_ld])
+
+                        if not company:
+                            company_meta = _extract_from_meta(soup)
+                            if company_meta:
+                                company = _normalize_name(company_meta)
+
+                        _record_phones(_extract_phones_from_soup(soup))
+                        if not phone and _extra_phones:
+                            for cand in _extra_phones:
+                                if not is_freephone(cand):
+                                    phone = cand
+                                    break
+                        elif phone and is_freephone(phone) and _extra_phones:
+                            direct = next((p for p in _extra_phones if not is_freephone(p)), None)
+                            if direct:
+                                phone = direct
+
+                        if not company:
+                            footer = soup.find('footer')
+                            target = footer if footer else soup
+                            company = _extract_company_from_soup(target)
+                        
+                        if not company and all_text:
+                            company = _extract_company_from_text(all_text)
+                        
+                        if company:
+                            company = _normalize_name(company)
+                except Exception as e:
+                    logging.debug(f'LPページエラー ({lp_url}): {e}')
+
+            # ⑤ Meta フォールバック
+            if not company and meta_company:
+                cleaned_meta = (meta_company or '').strip()
+                if cleaned_meta and len(cleaned_meta) >= 2 and _is_valid_company(cleaned_meta):
+                    company = _normalize_name(cleaned_meta)
+                    if company:
+                        logging.debug(f'Meta page_nameでフォールバック: {origin}')
+
+            # ⑥ 英語法人格サフィックス解決（2秒タイムアウト）
+            if company and nta_api_key:
+                try:
+                    from processors.legal_name_resolver import needs_jp_name_lookup, resolve_legal_name
+                    if needs_jp_name_lookup(company):
+                        resolved = resolve_legal_name(company, nta_api_key)
+                        if resolved:
+                            company = resolved
+                except Exception as e:
+                    logging.debug(f'NTA API解決エラー: {e}')
+
+            # ⑦ 最終クリーニング
+            if company:
+                company = company.strip() if isinstance(company, str) else None
+
+            phones_str = ' / '.join(_extra_phones) if _extra_phones else None
+            result_container[:] = [company, phone, phones_str]
+        
+        except Exception as e:
+            logging.debug(f'find_company_info exception: {e}')
+
+    # Execute in thread with 45-second hard timeout (network calls need more time)
+    thread = threading.Thread(target=_execute, daemon=True)
+    thread.start()
+    thread.join(timeout=45.0)
+    
+    if thread.is_alive():
+        logging.warning(f'find_company_info timeout exceeded for {lp_url}')
+        return None, None, None
+    
+    return tuple(result_container)

@@ -1,0 +1,170 @@
+import json
+import logging
+import random
+import threading
+import time
+from urllib.parse import quote
+
+from playwright.sync_api import Page, TimeoutError as PlaywrightTimeoutError
+
+META_LIBRARY_URL = (
+    'https://www.facebook.com/ads/library/'
+    '?active_status=active&ad_type=all&country=JP'
+    '&q={keyword}&search_type=keyword_unordered'
+)
+
+COMPANY_KEY_CANDIDATES = [
+    'page_name', 'advertiser_name', 'page_identity',
+    'name', 'title', 'entity_name', 'page_profile_uri',
+]
+URL_KEY_CANDIDATES = [
+    'link_url', 'url', 'destination_url',
+    'landing_url', 'target_url', 'website_url',
+    'display_url',
+]
+
+
+def _find_key(data, candidates: list) -> str | None:
+    if not isinstance(data, dict):
+        return None
+    for key in candidates:
+        if key in data and data[key] and isinstance(data[key], str):
+            val = data[key].strip()
+            if val:
+                return val
+    for val in data.values():
+        if isinstance(val, dict):
+            result = _find_key(val, candidates)
+            if result:
+                return result
+        elif isinstance(val, list):
+            for item in val:
+                result = _find_key(item, candidates)
+                if result:
+                    return result
+    return None
+
+
+def _extract_ads_from_graphql(body) -> list[dict]:
+    ads = []
+    body_str = json.dumps(body, ensure_ascii=False)
+
+    if 'ad_library_main' not in body_str and 'edges' not in body_str:
+        return ads
+
+    # 再帰ではなくスタック方式でRecursionErrorを回避
+    stack = [body]
+    while stack:
+        obj = stack.pop()
+        if isinstance(obj, dict):
+            company = _find_key(obj, COMPANY_KEY_CANDIDATES)
+            url = _find_key(obj, URL_KEY_CANDIDATES)
+            if url and url.startswith('http') and 'facebook.com' not in url:
+                ads.append({'url': url, 'company': company})
+            stack.extend(obj.values())
+        elif isinstance(obj, list):
+            stack.extend(obj)
+
+    return ads
+
+
+def scrape_meta(page: Page, keyword: str) -> list[dict]:
+    results = []
+    results_lock = threading.Lock()
+    error_count = [0]
+
+    def handle_response(response):
+        if 'facebook.com/api/graphql' not in response.url:
+            return
+        try:
+            body = response.json()
+            ads = _extract_ads_from_graphql(body)
+            with results_lock:
+                results.extend(ads)
+        except Exception:
+            error_count[0] += 1
+
+    page.on('response', handle_response)
+
+    try:
+        url = META_LIBRARY_URL.format(keyword=quote(keyword))
+        page.goto(url, timeout=20000, wait_until='domcontentloaded')
+
+        if 'login' in page.url or 'checkpoint' in page.url:
+            logging.warning('Metaセッション切れ。再ログインが必要です')
+            return []
+
+        time.sleep(random.uniform(2, 4))
+
+        # スクロールで追加データを読み込む
+        for _ in range(3):
+            page.mouse.wheel(0, 800)
+            time.sleep(random.uniform(1.5, 2.5))
+
+    except PlaywrightTimeoutError:
+        logging.warning(f'Meta検索タイムアウト "{keyword}"')
+        return []
+    except Exception as e:
+        logging.warning(f'Meta検索失敗 "{keyword}": {e}')
+        return []
+    finally:
+        page.remove_listener('response', handle_response)
+
+    # 重複URL除去
+    seen = set()
+    unique = []
+    for ad in results:
+        url = ad.get('url', '')
+        if url and url not in seen:
+            seen.add(url)
+            unique.append(ad)
+
+    logging.info(f'Meta広告 {len(unique)}件発見: "{keyword}"')
+    return unique
+
+
+def check_meta_login(page: Page) -> bool:
+    try:
+        page.goto('https://www.facebook.com', timeout=15000, wait_until='domcontentloaded')
+        time.sleep(2)
+        # ログインフォームがあればログアウト状態（言語非依存）
+        if page.query_selector('input[name="email"], input[name="pass"], [data-testid="royal_login_button"]'):
+            return False
+        if 'login' in page.url or 'checkpoint' in page.url:
+            return False
+        return True
+    except Exception:
+        return False
+
+
+def do_meta_login(page: Page, email: str, password: str) -> bool:
+    try:
+        page.goto('https://www.facebook.com', timeout=15000, wait_until='domcontentloaded')
+        time.sleep(2)
+
+        email_field = page.query_selector('input[name="email"]')
+        pass_field = page.query_selector('input[name="pass"]')
+
+        if not email_field or not pass_field:
+            return False
+
+        email_field.click()
+        for c in email:
+            page.keyboard.type(c)
+            time.sleep(random.uniform(0.05, 0.12))
+        time.sleep(0.5)
+
+        pass_field.click()
+        for c in password:
+            page.keyboard.type(c)
+            time.sleep(random.uniform(0.05, 0.12))
+        time.sleep(0.5)
+
+        page.keyboard.press('Enter')
+        page.wait_for_load_state('domcontentloaded', timeout=15000)
+        time.sleep(2)
+
+        return 'login' not in page.url
+    except Exception as e:
+        logging.error(f'Metaログイン失敗: {e}')
+        return False

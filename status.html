@@ -1,0 +1,100 @@
+<!DOCTYPE html>
+<html lang="ja">
+<head>
+<meta charset="UTF-8">
+<meta http-equiv="refresh" content="60">
+<title>ad_scraper ステータス</title>
+<style>
+  body { font-family: "Segoe UI", sans-serif; background:#f0f2f5; margin:0; padding:20px; color:#333; }
+  h1 { font-size:1.4rem; margin:0 0 4px; }
+  .updated { color:#888; font-size:.85rem; margin-bottom:20px; }
+  .grid { display:grid; grid-template-columns:repeat(auto-fill,minmax(200px,1fr)); gap:12px; margin-bottom:20px; }
+  .card { background:#fff; border-radius:8px; padding:16px; box-shadow:0 1px 3px rgba(0,0,0,.1); }
+  .card h2 { font-size:.8rem; color:#888; margin:0 0 6px; text-transform:uppercase; letter-spacing:.05em; }
+  .card .val { font-size:2rem; font-weight:700; color:#1a73e8; }
+  .card .sub { font-size:.8rem; color:#888; margin-top:2px; }
+  .section { background:#fff; border-radius:8px; padding:16px; margin-bottom:16px; box-shadow:0 1px 3px rgba(0,0,0,.1); }
+  .section h2 { font-size:1rem; margin:0 0 12px; border-bottom:1px solid #eee; padding-bottom:8px; }
+  table { width:100%; border-collapse:collapse; font-size:.85rem; }
+  th { text-align:left; color:#888; font-weight:600; padding:4px 8px; }
+  td { padding:5px 8px; border-top:1px solid #f0f0f0; }
+  tr:hover td { background:#f8f9fa; }
+  .src-g { color:#34a853; } .src-y { color:#ea4335; } .src-m { color:#1877f2; }
+  .ok { color:#34a853; } .err { color:#ea4335; }
+  .error-box { background:#fff8f8; border-left:3px solid #ea4335; padding:8px 12px; font-size:.8rem;
+               font-family:monospace; white-space:pre-wrap; word-break:break-all; color:#555; }
+  .badge { display:inline-block; padding:2px 8px; border-radius:12px; font-size:.75rem; font-weight:600; }
+  .badge-ok { background:#e8f5e9; color:#2e7d32; }
+  .badge-err { background:#ffebee; color:#c62828; }
+  .share-bar { background:#fff; border-radius:8px; padding:14px 16px; margin-bottom:20px;
+               box-shadow:0 1px 3px rgba(0,0,0,.1); display:flex; align-items:center; gap:12px; }
+  .share-bar span { font-size:.8rem; color:#888; white-space:nowrap; }
+  .share-url { flex:1; font-size:.9rem; color:#1a73e8; word-break:break-all; }
+  .copy-btn { background:#1a73e8; color:#fff; border:none; border-radius:6px;
+              padding:7px 16px; font-size:.85rem; cursor:pointer; white-space:nowrap; }
+  .copy-btn:active { background:#1558b0; }
+  .copy-ok { background:#34a853 !important; }
+</style>
+</head>
+<body>
+<h1>📊 ad_scraper ステータス</h1>
+<p class="updated">最終更新: 2026-05-26 23:45:08 （60秒ごと自動更新）</p>
+
+
+
+<div class="grid">
+  <div class="card">
+    <h2>総取得件数</h2>
+    <div class="val">963</div>
+    <div class="sub">Sheets出力済: 963件</div>
+  </div>
+  <div class="card">
+    <h2>本日取得</h2>
+    <div class="val">77</div>
+    <div class="sub">&nbsp;</div>
+  </div>
+  <div class="card">
+    <h2>Google</h2>
+    <div class="val src-g">122</div>
+    <div class="sub">累計</div>
+  </div>
+  <div class="card">
+    <h2>Yahoo</h2>
+    <div class="val src-y">262</div>
+    <div class="sub">累計</div>
+  </div>
+  <div class="card">
+    <h2>Meta</h2>
+    <div class="val src-m">662</div>
+    <div class="sub">累計</div>
+  </div>
+</div>
+
+<div class="section">
+  <h2>直近15件</h2>
+  <table>
+    <tr><th>会社名</th><th>電話番号</th><th>キーワード</th><th>ソース</th><th>日付</th></tr>
+    <tr><td>株式会社キュレオ</td><td>052-737-7750</td><td>プログラミングスクール 名古屋</td><td>Yahoo</td><td>2026-05-26</td></tr><tr><td>株式会社リロクラブ</td><td>03-3226-0244</td><td>外壁塗装 見積</td><td>Meta</td><td>2026-05-26</td></tr><tr><td>有限会社清水写真館</td><td>0154-51-3636</td><td>成人式振袖 相談</td><td>Meta</td><td>2026-05-26</td></tr><tr><td>株式会社スタジオマックス</td><td>048-777-7400</td><td>成人式振袖 相談</td><td>Meta</td><td>2026-05-26</td></tr><tr><td>ジェイエステティック</td><td>03-5458-6611</td><td>東京 ブライダルエステ 体験</td><td>Yahoo</td><td>2026-05-26</td></tr><tr><td>株式会社ネットプロテクションズ</td><td>03-4577-9630</td><td>決済代行 埼玉</td><td>Yahoo</td><td>2026-05-26</td></tr><tr><td>株式会社ハツカ代表取締役CEO</td><td>042-359-6328</td><td>美容室 カラー</td><td>Meta</td><td>2026-05-26</td></tr><tr><td>株式会社タキオン.</td><td>052-693-6609</td><td>名古屋 美容室</td><td>Meta</td><td>2026-05-26</td></tr><tr><td>株式会社 サイトーホーム</td><td>017-741-0111</td><td>福岡 着付け教室 料金</td><td>Meta</td><td>2026-05-26</td></tr><tr><td>株式会社 コスモネット</td><td>0120-680-232</td><td>福岡 着付け教室 料金</td><td>Meta</td><td>2026-05-26</td></tr><tr><td>無人内見 MUJIN24 物件一覧 セキスイハイム東海株式会社</td><td>0120-000-816</td><td>福岡 着付け教室 料金</td><td>Meta</td><td>2026-05-26</td></tr><tr><td>株式会社Craft</td><td>06-6450-5067</td><td>ふるさと納税 相談</td><td>Meta</td><td>2026-05-26</td></tr><tr><td>社会福祉法人向陽会</td><td>099-555-5510</td><td>平屋 住宅</td><td>Meta</td><td>2026-05-26</td></tr><tr><td>株式会社富山総合建築</td><td>087-802-3908</td><td>平屋 住宅</td><td>Meta</td><td>2026-05-26</td></tr><tr><td>株式会社Basis</td><td>029-896-8213</td><td>名古屋 SEO対策 費用</td><td>Meta</td><td>2026-05-26</td></tr>
+  </table>
+</div>
+
+<div class="section">
+  <h2>アクティブキーワード（取得数上位）</h2>
+  <table>
+    <tr><th>キーワード</th><th>ソース</th><th>取得数</th><th>最終検索</th></tr>
+    <tr><td>ホワイトニング 初回</td><td>meta</td><td>655</td><td>2026-05-26T20:12</td></tr><tr><td>マウスピース矯正</td><td>meta</td><td>619</td><td>2026-05-26T14:05</td></tr><tr><td>AGA 相談</td><td>meta</td><td>79</td><td>2026-05-26T20:01</td></tr><tr><td>家具 EC</td><td>meta</td><td>72</td><td>2026-05-26T13:35</td></tr><tr><td>太陽光発電 相談</td><td>meta</td><td>69</td><td>2026-05-26T11:36</td></tr><tr><td>注文住宅 相談</td><td>meta</td><td>58</td><td>2026-05-24T10:56</td></tr><tr><td>インテリア 通販</td><td>meta</td><td>47</td><td>2026-05-26T17:17</td></tr><tr><td>洗面台リフォーム</td><td>meta</td><td>47</td><td>2026-05-26T11:51</td></tr><tr><td>外壁塗装 見積</td><td>meta</td><td>40</td><td>2026-05-26T23:25</td></tr><tr><td>レディースファッション 通販</td><td>meta</td><td>40</td><td>2026-05-26T23:41</td></tr>
+  </table>
+</div>
+
+<div class="section">
+  <h2>自己修復履歴（直近5件）</h2>
+  <table><tr><th>日時</th><th>対象ファイル</th><th>問題種別</th><th>結果</th></tr><tr><td>2026-05-25T23:39</td><td>processors/company_finder.py</td><td>accuracy_both_missing</td><td><span class="badge badge-ok">成功</span></td></tr><tr><td>2026-05-25T23:02</td><td>scrapers/serp_api_scraper.py</td><td>google_zero_results</td><td><span class="badge badge-ok">成功</span></td></tr><tr><td>2026-05-19T23:00</td><td>scrapers/meta_scraper.py</td><td>meta_session_expired</td><td><span class="badge badge-ok">成功</span></td></tr><tr><td>2026-05-19T22:30</td><td>processors/company_finder.py</td><td>company_extraction_low</td><td><span class="badge badge-err">失敗</span></td></tr><tr><td>2026-05-18T21:10</td><td>scrapers/yahoo_scraper.py</td><td>yahoo_zero_results</td><td><span class="badge badge-err">失敗</span></td></tr></table>
+</div>
+
+<div class="section">
+  <h2>最近のエラー</h2>
+  <div class="error-box">2026-05-26 22:54:06 [yahoo] ERROR: [SerpAPI] 全キーで失敗 → Playwrightにフォールバック</div><div class="error-box">2026-05-26 23:04:17 [yahoo] ERROR: [SerpAPI] 全キーで失敗 → Playwrightにフォールバック</div><div class="error-box">2026-05-26 23:14:33 [yahoo2] ERROR: [SerpAPI] 全キーで失敗 → Playwrightにフォールバック</div><div class="error-box">2026-05-26 23:27:07 [yahoo] ERROR: [SerpAPI] 全キーで失敗 → Playwrightにフォールバック</div><div class="error-box">2026-05-26 23:35:29 [watchdog] ERROR: [Watchdog] meta ハング検知 (312秒間応答なし)</div><div class="error-box">2026-05-26 23:35:29 [watchdog] ERROR: [Watchdog] meta ゾンビ化検知 (312秒) → 旧Chromeを終了して新スレッドを強制起動します</div><div class="error-box">2026-05-26 23:38:45 [yahoo] ERROR: [SerpAPI] 全キーで失敗 → Playwrightにフォールバック</div><div class="error-box">2026-05-26 23:38:48 [yahoo2] ERROR: [SerpAPI] 全キーで失敗 → Playwrightにフォールバック</div>
+</div>
+
+</body>
+</html>

@@ -1,0 +1,34 @@
+# 機密情報
+config.json
+credentials.json
+*.env
+.env*
+
+# データベース
+*.db
+*.db-shm
+*.db-wal
+
+# ログ・状態ファイル
+logs/
+*.log
+*.jsonl
+
+# ブラウザプロファイル（巨大 + ログイン情報含む）
+browser_profile*/
+
+# Python
+__pycache__/
+*.pyc
+*.pyo
+*.pyd
+.venv/
+venv/
+*.egg-info/
+
+# OS
+.DS_Store
+Thumbs.db
+
+# Playwright
+.playwright/

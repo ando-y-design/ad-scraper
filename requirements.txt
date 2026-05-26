@@ -1,0 +1,11 @@
+playwright
+playwright-stealth
+gspread==6.1.2
+google-auth==2.29.0
+requests==2.31.0
+tldextract
+beautifulsoup4
+lxml
+psutil>=5.9
+ngrok
+google-api-python-client

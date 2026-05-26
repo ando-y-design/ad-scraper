@@ -1,0 +1,426 @@
+import logging
+import random
+import time
+from pathlib import Path
+from urllib.parse import parse_qs, quote, unquote, urlparse
+
+from playwright.sync_api import Page, TimeoutError as PlaywrightTimeoutError
+from utils.geo_utils import set_area_geolocation
+
+BASE_DIR = Path(__file__).parent.parent
+SNAPSHOT_DIR = BASE_DIR / 'logs' / 'snapshots'
+
+# Yahoo Japan広告リンクのセレクタ（優先順）
+AD_LINK_SELECTORS = [
+    'a[href*="rd.listing.yahoo.co.jp"]',   # Yahoo広告リダイレクトURL（旧）
+    'a[href*="ck.yahoo.co.jp"]',            # Yahoo広告クリックトラッキング（旧）
+    'a[href*="cl.search.yahoo.co.jp"]',     # Yahoo広告クリックURL（新）
+    'a[href*="yclid="]',                    # Yahoo Click ID付きリンク
+    '[class*="SearchAdMod"] a[href^="http"]',
+    'li[class*="AdItem"] a[href^="http"]',
+    '[class*="AdResult"] a[href^="http"]',
+    '[class*="Sponsored"] a[href^="http"]',
+    '[data-ual-type*="ad"] a[href^="http"]',
+    '[class*="ad"] a[href*="rd.listing"]',
+]
+
+
+def _extract_lp_from_yahoo_url(href: str) -> str | None:
+    """Yahoo広告トラッキングURLからランディングページURLを直接抽出する（クリック不要）"""
+    try:
+        parsed = urlparse(href)
+        params = parse_qs(parsed.query)
+        # rd.listing.yahoo.co.jp / ck.yahoo.co.jp / cl.search.yahoo.co.jp の URL パラメータ
+        for param in ('url', 'u', 'ru', 'landing', 'dest', 'to'):
+            val = params.get(param, [None])[0]
+            if val:
+                decoded = unquote(val)
+                if decoded.startswith('http') and 'yahoo' not in decoded:
+                    return decoded
+        # パスに直接URLが含まれる形式1: /r/https%3A%2F%2F...
+        path = parsed.path
+        if '/r/' in path:
+            encoded = path.split('/r/', 1)[1]
+            decoded = unquote(encoded)
+            if decoded.startswith('http') and 'yahoo' not in decoded:
+                return decoded
+        # パスに直接URLが含まれる形式2: /**https://... (cl.search.yahoo.co.jp)
+        if '/**' in path:
+            after = path.split('/**', 1)[1]
+            decoded = unquote(after)
+            if decoded.startswith('http') and 'yahoo' not in decoded:
+                return decoded
+        # パスに直接URLが含まれる形式3: /*https://...
+        if '/*' in path:
+            after = path.split('/*', 1)[1]
+            decoded = unquote(after)
+            if decoded.startswith('http') and 'yahoo' not in decoded:
+                return decoded
+    except Exception:
+        pass
+    return None
+
+
+def _save_snapshot(page: Page, keyword: str, reason: str = '') -> None:
+    """診断用HTMLスナップショットを保存する（直近5件のみ保持）"""
+    try:
+        SNAPSHOT_DIR.mkdir(parents=True, exist_ok=True)
+        ts = int(time.time())
+        safe_kw = ''.join(c if c.isalnum() or c in '-_' else '_' for c in keyword)[:30]
+        snap_path = SNAPSHOT_DIR / f'yahoo_{safe_kw}_{ts}.html'
+
+        html = page.content()
+        if len(html) > 50000:
+            html = html[:50000] + '\n<!-- truncated -->'
+        snap_path.write_text(html, encoding='utf-8', errors='replace')
+
+        snaps = sorted(SNAPSHOT_DIR.glob('yahoo_*.html'), key=lambda p: p.stat().st_mtime)
+        for old in snaps[:-5]:
+            old.unlink(missing_ok=True)
+
+        logging.debug(f'[Yahoo] スナップショット保存: {snap_path.name} ({reason})')
+    except Exception as e:
+        logging.debug(f'[Yahoo] スナップショット保存失敗: {e}')
+
+
+def scrape_yahoo(page: Page, keyword: str, area: dict | None = None, heartbeat=None) -> list[str]:
+    """
+    heartbeat: 呼び出し元スレッドのハートビートコールバック（省略可）。
+    長時間ブロックする操作の前後に呼んでWatchdogの誤検知を防ぐ。
+    """
+    def _hb():
+        if heartbeat:
+            heartbeat()
+
+    urls = []
+
+    if area:
+        set_area_geolocation(page.context, area)
+
+    search_url = f'https://search.yahoo.co.jp/search?p={quote(keyword)}&ei=UTF-8'
+    if area:
+        search_url += f'&rkf=1&b={quote(area["name"])}'
+
+    try:
+        page.goto(
+            search_url,
+            timeout=20000, wait_until='domcontentloaded'
+        )
+        _hb()
+        # Yahoo uses Next.js — wait for JS hydration so ad elements appear in DOM
+        # tmual is loaded async, so network may not fully idle; use longer timeout
+        try:
+            page.wait_for_load_state('networkidle', timeout=12000)
+        except PlaywrightTimeoutError:
+            pass  # non-fatal; continue with whatever is rendered
+        _hb()
+    except PlaywrightTimeoutError:
+        logging.warning(f'Yahoo検索タイムアウト "{keyword}"')
+        _hb()
+        return []
+    except Exception as e:
+        _hb()
+        err_lower = str(e).lower()
+        if any(k in err_lower for k in ('target closed', 'context or browser has been closed',
+                                         'connection reset', 'browser closed', 'crash')):
+            logging.warning(f'Yahoo検索失敗(ページクラッシュ) "{keyword}": {e}')
+            raise  # 呼び出し元でページ再作成させる
+        logging.warning(f'Yahoo検索失敗 "{keyword}": {e}')
+        return []
+
+    # URL + ページコンテンツ両方でCAPTCHA検出
+    _is_yahoo_captcha = 'captcha' in page.url.lower()
+    if not _is_yahoo_captcha:
+        try:
+            _content = page.content()
+            if any(s in _content for s in ('id="captcha-form"', 'g-recaptcha', 'recaptcha/enterprise')):
+                _is_yahoo_captcha = True
+        except Exception:
+            pass
+    if _is_yahoo_captcha:
+        logging.warning(f'Yahoo CAPTCHAを検出。キーワード "{keyword}" をスキップ')
+        _save_snapshot(page, keyword, 'captcha')
+        return []
+
+    time.sleep(random.uniform(1.5, 3))
+
+    # UAL要素の非同期ロードを待機（tmualはasyncロードのため時間がかかる）
+    # 広告要素([data-ual-type="ad"])が現れるまで最大6秒待つ
+    try:
+        page.wait_for_selector('[data-ual-type]', timeout=6000)
+    except PlaywrightTimeoutError:
+        pass  # UAL要素なしでも続行
+
+    _hb()
+
+    # DOM状態診断ログ（Yahoo広告が取れない原因特定用）
+    try:
+        dom_info = page.evaluate("""() => {
+            const allLinks = Array.from(document.querySelectorAll('a[href]'));
+            const links = allLinks.length;
+            const ualTypes = [...new Set(
+                Array.from(document.querySelectorAll('[data-ual-type]'))
+                    .map(el => el.getAttribute('data-ual-type'))
+            )].slice(0, 10);
+            const tracking = allLinks
+                .filter(a => ['yclid=','cl.search.yahoo','rd.listing.yahoo','ck.yahoo','ys.yahoo'].some(p => a.href.includes(p))).length;
+            const prLabels = Array.from(document.querySelectorAll('span,div,em,small'))
+                .filter(el => ['PR','広告','スポンサー'].includes((el.textContent||'').trim())).length;
+            const bodyLen = (document.body && document.body.innerHTML) ? document.body.innerHTML.length : 0;
+            // 全属性名サンプル（ad関連を探す）
+            const adAttrs = [...new Set(
+                Array.from(document.querySelectorAll('*'))
+                    .flatMap(el => Array.from(el.attributes).map(a => a.name))
+                    .filter(n => n.includes('ad') || n.includes('ual') || n.includes('sponsor'))
+            )].slice(0, 15);
+            // 外部リンクの先頭5件
+            const extHrefs = allLinks
+                .map(a => a.href)
+                .filter(h => h.startsWith('http') && !h.includes('yahoo.co.jp') && !h.includes('yimg.jp'))
+                .slice(0, 5);
+            return JSON.stringify({links, bodyLen, ualTypes, tracking, prLabels, adAttrs, extHrefs});
+        }""")
+        import json as _json
+        _d = _json.loads(dom_info)
+        logging.info(f'[Yahoo] DOM診断: links={_d["links"]} body={_d["bodyLen"]} ual={_d["ualTypes"]} tracking={_d["tracking"]} prLabels={_d["prLabels"]} adAttrs={_d["adAttrs"]} / "{keyword}"')
+        if _d["extHrefs"]:
+            logging.info(f'[Yahoo] 外部リンク例: {_d["extHrefs"]} / "{keyword}"')
+    except Exception as _de:
+        logging.info(f'[Yahoo] DOM診断失敗: {_de}')
+
+    # 広告リンクを収集（2026年 Yahoo Japan セレクタ更新版）
+    UPDATED_AD_LINK_SELECTORS = [
+        # UAL属性ベース（tmual-4.x 系で最も信頼性高い）
+        '[data-ual-type="ad"] a[href^="http"]',
+        '[data-ual-type*="ad"] a[href^="http"]',
+        '[data-ual-type="sp"] a[href^="http"]',
+        '[data-ual-type*="sp"] a[href^="http"]',
+        '[data-ual-module*="ad"] a[href^="http"]',
+        '[data-ual-module*="Ad"] a[href^="http"]',
+        # トラッキングURLベース
+        'a[href*="rd.listing.yahoo.co.jp"]',
+        'a[href*="ck.yahoo.co.jp"]',
+        'a[href*="cl.search.yahoo.co.jp"]',
+        'a[href*="ys.yahoo.co.jp"]',            # 2025年新トラッキングドメイン
+        'a[href*="yclid="]',
+        # クラスベース
+        '[class*="SearchAdMod"] a[href^="http"]',
+        '[class*="AdMod"] a[href^="http"]',
+        'li[class*="AdItem"] a[href^="http"]',
+        '[class*="AdResult"] a[href^="http"]',
+        '[class*="AdBlock"] a[href^="http"]',
+        '[class*="Sponsored"] a[href^="http"]',
+        '[class*="sponsored"] a[href^="http"]',
+        '[class*="ad-"] a[href^="http"]',
+        '[class*="Ad"] a[href^="http"]',
+    ]
+
+    ad_links = []
+    matched_selector = ''
+    for selector in UPDATED_AD_LINK_SELECTORS:
+        try:
+            elements = page.query_selector_all(selector)
+            if elements:
+                ad_links = elements[:8]
+                matched_selector = selector
+                logging.debug(f'Yahoo広告セレクタ一致: {selector}')
+                break
+        except Exception:
+            continue
+
+    # JS fallback: トラッキングURL・UAL属性・PRラベル三段階検出
+    if not ad_links:
+        try:
+            ad_hrefs = page.evaluate("""() => {
+                const TRACKING_PATTERNS = [
+                    'cl.search.yahoo.co.jp',
+                    'rd.listing.yahoo.co.jp',
+                    'ck.yahoo.co.jp',
+                    'ys.yahoo.co.jp',
+                    'yclid='
+                ];
+                // Yahoo Japanは「PR」表記（「広告」より優先）
+                const AD_LABELS = ['PR', '\u5e83\u544a', '\u30b9\u30dd\u30f3\u30b5\u30fc', 'Sponsored', 'Ad'];
+                const UAL_AD_TYPES = ['ad', 'sp', 'sponsored'];
+
+                const allLinks = Array.from(document.querySelectorAll('a[href]'));
+
+                // Priority 1: トラッキングURLパターン
+                const byTracking = allLinks
+                    .filter(a => TRACKING_PATTERNS.some(p => a.href.includes(p)))
+                    .map(a => a.href);
+                if (byTracking.length) return byTracking.slice(0, 8);
+
+                // Priority 2: UAL type/module属性ベース（tmual連携）
+                const byUal = [];
+                for (const a of allLinks) {
+                    const container = a.closest('[data-ual-type],[data-ual-module]');
+                    if (container) {
+                        const ualVal = (
+                            (container.getAttribute('data-ual-type') || '') +
+                            (container.getAttribute('data-ual-module') || '')
+                        ).toLowerCase();
+                        if (UAL_AD_TYPES.some(t => ualVal.includes(t))) {
+                            if (a.href && a.href.startsWith('http') && !a.href.includes('javascript:')) {
+                                byUal.push(a.href);
+                            }
+                        }
+                    }
+                }
+                if (byUal.length) return byUal.slice(0, 8);
+
+                // Priority 3: PRラベル付きコンテナ内リンク（広告ラベルテキスト完全一致）
+                const result = [];
+                for (const a of allLinks) {
+                    const container = a.closest('li, article, section, div');
+                    if (!container) continue;
+                    const labelEls = container.querySelectorAll('span, div, em, small, p, b, strong, cite');
+                    const hasPrLabel = Array.from(labelEls).some(el => {
+                        const text = (el.textContent || '').trim();
+                        return AD_LABELS.some(label => text === label);
+                    });
+                    if (hasPrLabel && a.href && a.href.startsWith('http') && !a.href.includes('javascript:')) {
+                        result.push(a.href);
+                    }
+                }
+                // 外部URLを優先、トラッキングURLも含める
+                const external = result.filter(h => !h.includes('yahoo.co.jp'));
+                if (external.length) return external.slice(0, 8);
+                // トラッキングURL（yahoo.co.jp含む）も返す
+                return result.slice(0, 8);
+            }""")
+            if ad_hrefs:
+                logging.info(f'Yahoo広告 JS fallback {len(ad_hrefs)}件発見: "{keyword}"')
+                matched_selector = 'js_fallback'
+                for href in ad_hrefs:
+                    lp = _extract_lp_from_yahoo_url(href)
+                    if lp:
+                        urls.append(lp)
+                        logging.debug(f'Yahoo LP(JS fallback直接抽出): {lp}')
+                    elif href.startswith('http') and 'yahoo.co.jp' not in href:
+                        # 広告ラベル付きリンクが既に外部URLの場合はそのまま使用
+                        urls.append(href)
+                        logging.debug(f'Yahoo LP(JS fallback外部URL): {href}')
+                if urls:
+                    return urls
+                logging.debug(f'Yahoo JS fallback: LP抽出0件 (hrefs={ad_hrefs[:2]})')
+        except Exception as e:
+            logging.debug(f'Yahoo JS fallback エラー: {e}')
+
+    if not ad_links and not urls:
+        # tmual非同期ロード遅延対策: 2秒追加待機してリトライ
+        time.sleep(2.0)
+        _hb()
+        try:
+            retry_hrefs = page.evaluate("""() => {
+                const TRACKING_PATTERNS = [
+                    'cl.search.yahoo.co.jp', 'rd.listing.yahoo.co.jp',
+                    'ck.yahoo.co.jp', 'ys.yahoo.co.jp', 'yclid='
+                ];
+                const UAL_AD_TYPES = ['ad', 'sp', 'sponsored'];
+                const allLinks = Array.from(document.querySelectorAll('a[href]'));
+                const byTracking = allLinks
+                    .filter(a => TRACKING_PATTERNS.some(p => a.href.includes(p)))
+                    .map(a => a.href);
+                if (byTracking.length) return byTracking.slice(0, 8);
+                const byUal = [];
+                for (const a of allLinks) {
+                    const container = a.closest('[data-ual-type],[data-ual-module]');
+                    if (container) {
+                        const ualVal = (
+                            (container.getAttribute('data-ual-type') || '') +
+                            (container.getAttribute('data-ual-module') || '')
+                        ).toLowerCase();
+                        if (UAL_AD_TYPES.some(t => ualVal.includes(t))) {
+                            if (a.href && a.href.startsWith('http')) byUal.push(a.href);
+                        }
+                    }
+                }
+                return byUal.slice(0, 8);
+            }""")
+            if retry_hrefs:
+                logging.info(f'Yahoo広告 遅延リトライ {len(retry_hrefs)}件発見: "{keyword}"')
+                for href in retry_hrefs:
+                    lp = _extract_lp_from_yahoo_url(href)
+                    if lp:
+                        urls.append(lp)
+                    elif href.startswith('http') and 'yahoo.co.jp' not in href:
+                        urls.append(href)
+                if urls:
+                    return urls
+        except Exception:
+            pass
+        _save_snapshot(page, keyword, 'zero_ads')
+        logging.debug(f'Yahoo広告なし: "{keyword}" — スナップショット保存済み')
+        return []
+
+    if urls:
+        # JS fallback でLP取得済みの場合
+        return urls
+
+    logging.info(f'Yahoo広告 {len(ad_links)}件発見: "{keyword}" (selector={matched_selector})')
+
+    for i, link in enumerate(ad_links):
+        _hb()
+        try:
+            href = link.get_attribute('href') or ''
+
+            # 戦略1: トラッキングURLから LP URL を直接抽出（クリック不要）
+            if any(p in href for p in ('rd.listing.yahoo.co.jp', 'ck.yahoo.co.jp',
+                                        'cl.search.yahoo.co.jp', 'ys.yahoo.co.jp')):
+                lp = _extract_lp_from_yahoo_url(href)
+                if lp:
+                    urls.append(lp)
+                    logging.debug(f'Yahoo LP(直接抽出): {lp}')
+                    continue
+
+            # 戦略2: クリックしてポップアップから URL 取得
+            try:
+                with page.expect_popup(timeout=8000) as popup_info:
+                    link.click()
+                popup = popup_info.value
+                popup.wait_for_load_state('domcontentloaded', timeout=10000)
+                url = popup.url
+                popup.close()
+                _hb()
+            except PlaywrightTimeoutError:
+                _hb()
+                # ポップアップなし → 同一タブで開いた可能性
+                url = page.url
+                # Yahoo URL に戻っていたらスキップ
+                if 'yahoo.co.jp' in url:
+                    try:
+                        page.go_back(timeout=5000, wait_until='domcontentloaded')
+                    except Exception:
+                        page.goto(
+                            search_url,
+                            timeout=15000, wait_until='domcontentloaded'
+                        )
+                    _hb()
+                    continue
+
+            if url and url.startswith('http') and 'yahoo.co.jp' not in url:
+                urls.append(url)
+                logging.debug(f'Yahoo LP取得: {url}')
+
+            time.sleep(random.uniform(1, 3))
+
+            try:
+                page.go_back(timeout=5000, wait_until='domcontentloaded')
+                time.sleep(random.uniform(0.5, 1.5))
+            except Exception:
+                page.goto(
+                    search_url,
+                    timeout=15000, wait_until='domcontentloaded'
+                )
+            _hb()
+
+        except Exception as e:
+            logging.debug(f'Yahoo広告クリックエラー (#{i}): {e}')
+            continue
+
+    if not urls and ad_links:
+        _save_snapshot(page, keyword, 'zero_lp_from_ads')
+        logging.info(f'Yahoo LP取得 0件: 広告{len(ad_links)}件あるが LP 抽出できず')
+
+    return urls

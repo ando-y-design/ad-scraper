@@ -1,0 +1,405 @@
+import logging
+import random
+import time
+from pathlib import Path
+from urllib.parse import parse_qs, quote, unquote, urlparse
+
+from playwright.sync_api import Page, TimeoutError as PlaywrightTimeoutError
+from scrapers.serp_api_scraper import scrape_google_via_api
+from utils.geo_utils import set_area_geolocation
+
+BASE_DIR = Path(__file__).parent.parent
+SNAPSHOT_DIR = BASE_DIR / 'logs' / 'snapshots'
+_CAPTCHA_STATE_FILE = BASE_DIR / 'logs' / '.google_captcha_state'
+
+# 優先順: より特定的なセレクタを先に試す
+AD_LINK_SELECTORS = [
+    '#tads a[href*="/aclk"]',           # 上部広告セクション（最確実）
+    '#bottomads a[href*="/aclk"]',       # 下部広告セクション
+    'a[href*="/aclk"]',                  # ページ全体から /aclk リンク
+    '[data-text-ad] a[href^="http"]',    # テキスト広告コンテナ内リンク
+    'div[data-text-ad] a',               # テキスト広告（属性値なし）
+    '.uEierd a[href^="http"]',           # 広告カードのリンク
+    'div[id^="tads"] a[href^="http"]',   # tads IDプレフィックス
+]
+
+WARMUP_SITES = [
+    'https://www.nikkei.com',
+    'https://www.asahi.com',
+    'https://www.yomiuri.co.jp',
+    'https://news.yahoo.co.jp',
+    'https://www.nhk.or.jp',
+]
+
+DECOY_KEYWORDS = [
+    'ニュース 今日', '天気予報', '映画 おすすめ', 'レストラン 渋谷',
+    'Python プログラミング', '旅行 国内',
+]
+
+
+def warmup(page: Page):
+    site = random.choice(WARMUP_SITES)
+    try:
+        page.goto(site, timeout=10000, wait_until='domcontentloaded')
+        time.sleep(random.uniform(2, 4))
+        page.mouse.move(random.randint(200, 800), random.randint(200, 600))
+    except Exception:
+        pass
+
+
+def _extract_lp_from_aclk(href: str) -> str | None:
+    """Google /aclk トラッキングURLからランディングページURLを抽出する"""
+    try:
+        parsed = urlparse(href)
+        params = parse_qs(parsed.query)
+        # パラメータ名の優先順
+        for param in ('adurl', 'q', 'url'):
+            val = params.get(param, [None])[0]
+            if val and val.startswith('http') and 'google' not in val:
+                return unquote(val)
+    except Exception:
+        pass
+    return None
+
+
+def _save_snapshot(page: Page, keyword: str, reason: str = '') -> None:
+    """診断用HTMLスナップショットを保存する（直近5件のみ保持）"""
+    try:
+        SNAPSHOT_DIR.mkdir(parents=True, exist_ok=True)
+        ts = int(time.time())
+        safe_kw = ''.join(c if c.isalnum() or c in '-_' else '_' for c in keyword)[:30]
+        snap_path = SNAPSHOT_DIR / f'google_{safe_kw}_{ts}.html'
+
+        html = page.content()
+        # 50KB上限で切り詰め（self_repairのプロンプトサイズ管理）
+        if len(html) > 50000:
+            html = html[:50000] + '\n<!-- truncated -->'
+        snap_path.write_text(html, encoding='utf-8', errors='replace')
+
+        # 古いgoogleスナップショットを削除（5件超過分）
+        snaps = sorted(SNAPSHOT_DIR.glob('google_*.html'), key=lambda p: p.stat().st_mtime)
+        for old in snaps[:-5]:
+            old.unlink(missing_ok=True)
+
+        logging.debug(f'[Google] スナップショット保存: {snap_path.name} ({reason})')
+    except Exception as e:
+        logging.debug(f'[Google] スナップショット保存失敗: {e}')
+
+
+def _is_captcha_page(page: Page) -> bool:
+    """URLとページコンテンツ両方でCAPTCHAページを検出する"""
+    if 'sorry.google' in page.url or 'captcha' in page.url.lower():
+        return True
+    try:
+        content = page.content()
+        captcha_signals = [
+            'id="captcha-form"',
+            'g-recaptcha',
+            'solveSimpleChallenge',
+            'recaptcha/enterprise',
+            'id="recaptcha"',
+        ]
+        if any(signal in content for signal in captcha_signals):
+            return True
+    except Exception:
+        pass
+    return False
+
+
+def _get_captcha_backoff() -> tuple[int, float]:
+    """CAPTCHAバックオフ状態をファイルから読み込む: (連続検出回数, 解除時刻)"""
+    try:
+        if _CAPTCHA_STATE_FILE.exists():
+            data = _CAPTCHA_STATE_FILE.read_text().strip().split(',')
+            return int(data[0]), float(data[1])
+    except Exception:
+        pass
+    return 0, 0.0
+
+
+def _set_captcha_backoff(consecutive: int) -> None:
+    """CAPTCHAバックオフ状態をファイルに保存する（指数バックオフ、最大24時間）"""
+    wait = min(1800 * (2 ** (consecutive - 1)), 86400)
+    until = time.time() + wait
+    try:
+        _CAPTCHA_STATE_FILE.parent.mkdir(parents=True, exist_ok=True)
+        _CAPTCHA_STATE_FILE.write_text(f'{consecutive},{until}')
+    except Exception:
+        pass
+    logging.warning(
+        f'[Google] CAPTCHA バックオフ設定: {consecutive}回連続検出、{wait//60}分間スキップ '
+        f'(解除: {time.strftime("%H:%M:%S", time.localtime(until))})'
+    )
+
+
+def _reset_captcha_backoff() -> None:
+    """広告取得成功時にCAPTCHAバックオフ状態をリセットする"""
+    try:
+        _CAPTCHA_STATE_FILE.unlink(missing_ok=True)
+    except Exception:
+        pass
+
+
+def scrape_google(page: Page, keyword: str, area: dict | None = None) -> list[str] | None:
+    """
+    area: config.json の areas リストの1要素 (name/lat/lng/serp_location)。
+          指定するとブラウザGPS座標を変更し、Google検索URLに near= を追加する。
+    Returns:
+        list[str]: 収集したLP URLリスト（空リストは「広告なし」）
+        None: バックオフ中でスキップ（診断記録不要）
+    """
+    urls = []
+
+    # SERP APIキーが設定済みなら優先（Playwrightによるブロックリスクを回避）
+    location = area.get('serp_location') if area else None
+    api_result = scrape_google_via_api(keyword, location=location)
+    if api_result is not None:  # SerpAPIが成功（0件含む）→ Playwrightをスキップ（CAPTCHA防止）
+        return api_result
+
+    # SerpAPI全キー失敗 → Playwrightフォールバックは行わず即スキップ (CAPTCHA対策修正)
+    # Google検索はPlaywrightに対して常にCAPTCHAを返すため、試みるたびに
+    # 指数バックオフが増殖し最終的に16〜24時間のロックアウトになる。
+    # SerpAPIが使えないときはGoogleを諦めてYahoo/Metaに集中する。
+    logging.debug(f'[Google] SerpAPI全キー失敗 → Playwrightスキップ (CAPTCHA防止) "{keyword}"')
+    return None
+
+    # ---- 以下のPlaywrightコード: 無効化済み (将来復活させる場合はこのブロックを有効化) ----
+    # SerpAPI未設定時のみPlaywright直接スクレイピングにフォールバック
+    # CAPTCHAバックオフ中はスキップ
+    consecutive, until = _get_captcha_backoff()
+    if time.time() < until:
+        remaining = int(until - time.time())
+        logging.warning(
+            f'[Google] CAPTCHAバックオフ中 (残り{remaining}秒)、APIキーも未設定: "{keyword}"'
+        )
+        return None
+
+    # 連続CAPTCHA回数が多い場合は延長バックオフ（指数的に増やす）
+    # 5回以上連続で CAPTCHA → 1時間ごとに試す程度に抑制
+    if consecutive >= 5:
+        import time as _time
+        extra_backoff = min(consecutive * 600, 7200)  # 最大2時間
+        if _time.time() < until + extra_backoff:
+            logging.warning(
+                f'[Google] 連続CAPTCHA {consecutive}回: 延長バックオフ中、スキップ "{keyword}"'
+            )
+            return None
+
+    # バックオフ明け: ブラウザ Cookie・ストレージをリセットして CAPTCHA フィンガープリントを解消
+    if consecutive > 0:
+        try:
+            page.context.clear_cookies()
+            page.goto(
+                'https://www.google.co.jp/',
+                timeout=12000, wait_until='domcontentloaded'
+            )
+            time.sleep(random.uniform(3, 6))
+            # ホームページ表示後に軽いスクロールで人間らしさを演出
+            page.mouse.wheel(0, random.randint(100, 300))
+            time.sleep(random.uniform(1, 2))
+        except Exception:
+            pass
+
+    # ブラウザのGPS座標をエリアに変更
+    if area:
+        set_area_geolocation(page.context, area)
+
+    # デコイ検索（5回に1回）
+    if random.random() < 0.2:
+        try:
+            decoy = random.choice(DECOY_KEYWORDS)
+            page.goto(
+                f'https://www.google.co.jp/search?q={quote(decoy)}&gl=jp&hl=ja',
+                timeout=15000, wait_until='domcontentloaded'
+            )
+            time.sleep(random.uniform(2, 4))
+        except Exception:
+            pass
+
+    search_url = f'https://www.google.co.jp/search?q={quote(keyword)}&gl=jp&hl=ja'
+    if area:
+        search_url += f'&near={quote(area["name"])}'
+
+    try:
+        page.goto(
+            search_url,
+            timeout=15000, wait_until='domcontentloaded'
+        )
+    except PlaywrightTimeoutError:
+        logging.warning(f'Google検索タイムアウト "{keyword}"')
+        return []
+    except Exception as e:
+        logging.warning(f'Google検索失敗 "{keyword}": {e}')
+        return []
+
+    # 強化版CAPTCHA検出:
+    #   1. URL判定 — Google CAPTCHA時は &sei= パラメータが付与 or /sorry/ にリダイレクト
+    #   2. タイトル判定 — CAPTCHA页のタイトルは検索URL文字列そのもの（"http"始まり）
+    #   3. HTML内容チェック（既存ロジック）
+    def _is_captcha_enhanced(p) -> bool:
+        # --- 1. URL-based (最も信頼性が高い) ---
+        try:
+            current_url = p.url
+            if '/sorry/' in current_url or '&sei=' in current_url or '?sei=' in current_url:
+                return True
+        except Exception:
+            pass
+
+        # --- 2. Title-based ---
+        # CAPTCHAページのタイトルは検索URLそのもの（例: "https://www.google.co.jp/search?q=..."）
+        try:
+            title = p.title()
+            if title.startswith('http') or 'captcha' in title.lower():
+                return True
+        except Exception:
+            pass
+
+        # --- 3. 元のセレクタ判定 ---
+        if _is_captcha_page(p):
+            return True
+
+        # --- 4. HTML内容チェック ---
+        try:
+            content = p.content()
+            indicators = [
+                'id="captcha-form"',
+                'id="recaptcha"',
+                'class="g-recaptcha"',
+                'recaptcha/enterprise.js',
+                'solveSimpleChallenge',
+                "getElementById('captcha')",
+                'data-sitekey=',
+                'recaptcha__ja.js',
+            ]
+            return any(ind in content for ind in indicators)
+        except Exception:
+            return False
+
+    def _handle_captcha_detected(label: str) -> None:
+        _save_snapshot(page, keyword, 'captcha')
+        c, _ = _get_captcha_backoff()
+        _set_captcha_backoff(c + 1)
+        logging.warning(
+            f'[Google] CAPTCHA検出({label}): "{keyword}" → バックオフ設定 (連続{c + 1}回)'
+        )
+
+    if _is_captcha_enhanced(page):
+        _handle_captcha_detected('初回チェック')
+        return None
+
+    # CAPTCHA検出なし → バックオフカウンタをリセット
+    if consecutive > 0:
+        _reset_captcha_backoff()
+
+    time.sleep(random.uniform(1.5, 3))
+
+    # 遅延リダイレクト対策: sleep後に再度CAPTCHA確認
+    if _is_captcha_enhanced(page):
+        _handle_captcha_detected('遅延リダイレクト')
+        return None
+
+    # 広告セクションが描画されるまで短時間待機
+    try:
+        page.wait_for_selector('#tads, [data-text-ad], a[href*="/aclk"]', timeout=5000)
+    except PlaywrightTimeoutError:
+        pass  # 広告なしも正常。後続で検証
+
+    # 戦略1: セレクタでaclkリンクを直接抽出（クリック不要・高速）
+    for selector in AD_LINK_SELECTORS:
+        try:
+            elements = page.query_selector_all(selector)
+            if not elements:
+                continue
+            for elem in elements[:8]:
+                href = elem.get_attribute('href') or ''
+                # /aclk を含むリンクから LP URL を抽出
+                if '/aclk' in href:
+                    lp = _extract_lp_from_aclk(href)
+                    if lp:
+                        urls.append(lp)
+                        logging.debug(f'Google LP(直接抽出): {lp}')
+                # http始まりの外部リンクをそのまま採用（[data-text-ad]内のみ）
+                elif href.startswith('http') and 'google' not in href and 'data-text-ad' in selector:
+                    urls.append(href)
+                    logging.debug(f'Google LP(direct): {href}')
+            if urls:
+                break
+        except Exception:
+            continue
+
+    # 戦略2: /aclkリンクが取れなかった場合はクリック方式にフォールバック
+    if not urls:
+        urls = _scrape_google_click(page, keyword)
+
+    if not urls:
+        _save_snapshot(page, keyword, 'zero_results')
+        logging.info(f'Google広告 0件: "{keyword}" — スナップショット保存済み')
+    else:
+        _reset_captcha_backoff()
+        logging.info(f'Google広告 {len(urls)}件発見: "{keyword}"')
+
+    return urls
+
+
+def _scrape_google_click(page: Page, keyword: str) -> list[str]:
+    """クリック方式でGoogle広告LPを取得する（フォールバック）"""
+    urls = []
+
+    ad_elements = []
+    for selector in AD_LINK_SELECTORS:
+        try:
+            elements = page.query_selector_all(selector)
+            if elements:
+                ad_elements = elements[:5]
+                break
+        except Exception:
+            continue
+
+    if not ad_elements:
+        logging.debug(f'Google広告なし（クリック方式）: "{keyword}"')
+        return []
+
+    for i, elem in enumerate(ad_elements):
+        try:
+            link = elem if elem.get_attribute('href') else elem.query_selector('a')
+            if not link:
+                continue
+
+            href = link.get_attribute('href') or ''
+            # /aclk リンクならクリック前に URL 抽出を試みる
+            if '/aclk' in href:
+                lp = _extract_lp_from_aclk(href)
+                if lp:
+                    urls.append(lp)
+                    continue
+
+            try:
+                with page.expect_popup(timeout=6000) as popup_info:
+                    link.click()
+                popup = popup_info.value
+                popup.wait_for_load_state('domcontentloaded', timeout=10000)
+                url = popup.url
+                popup.close()
+            except PlaywrightTimeoutError:
+                url = page.url
+
+            if 'google.com/amp/s/' in url:
+                url = url.replace('https://www.google.com/amp/s/', 'https://')
+
+            if url and url.startswith('http') and 'google' not in url:
+                urls.append(url)
+
+            time.sleep(random.uniform(1, 3))
+
+            try:
+                page.go_back(timeout=5000, wait_until='domcontentloaded')
+                time.sleep(random.uniform(0.5, 1.5))
+            except Exception:
+                fallback_url = f'https://www.google.co.jp/search?q={quote(keyword)}&gl=jp&hl=ja'
+                page.goto(fallback_url, timeout=15000, wait_until='domcontentloaded')
+
+        except Exception as e:
+            logging.debug(f'Google広告クリックエラー (#{i}): {e}')
+            continue
+
+    return urls
