@@ -52,6 +52,14 @@ def writer_worker():
         logging.info('[Writer] Google Sheets接続成功')
         writer.sync_headers()  # ヘッダー行が古い場合は自動更新
 
+        # 重複チェック台帳を初期化
+        try:
+            from storage.dedup_registry import init_registry
+            account_id = config.get('account_id', 'A')
+            init_registry(client, account_id)
+        except Exception as e:
+            logging.warning(f'[Writer] 重複チェック台帳初期化失敗（無効化）: {e}')
+
         # 起動時: 前回未送信データをSheetsに再送
         unexported = get_unexported(conn)
         if unexported:
@@ -92,6 +100,12 @@ def writer_worker():
         try:
             inserted = insert_company(conn, data)
             if not inserted:
+                continue
+
+            # 他アカウントとの重複チェック
+            from storage.dedup_registry import check_and_register
+            if not check_and_register(data.get('phone', ''), data.get('company_name', '')):
+                logging.debug(f'[Writer] 他アカウント重複スキップ: {data.get("company_name")}')
                 continue
 
             if data.get('keyword'):
