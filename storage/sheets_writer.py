@@ -11,7 +11,7 @@ SCOPES = [
     'https://www.googleapis.com/auth/drive',
 ]
 
-HEADERS = ['会社名', 'LP URL', '電話番号', '担当者名', '出稿KW（全て）', '競合他社', '広告ソース', '取得日']
+HEADERS = ['会社名', 'LP URL', '電話番号', '取得日']
 
 
 def get_sheets_client(credentials_path: str):
@@ -27,19 +27,13 @@ def get_worksheet(client, sheet_id: str):
 def setup_sheet(spreadsheet, worksheet):
     sheet_id = worksheet.id
 
-    worksheet.update('A1:H1', [HEADERS])
+    worksheet.update('A1:D1', [HEADERS])
 
-    # 列インデックス: A=0会社名, B=1 LP URL, C=2電話番号, D=3担当者名,
-    #                E=4出稿KW, F=5競合他社, G=6広告ソース, H=7取得日
     col_widths = [
         (0, 1, 180),   # A: 会社名
         (1, 2, 280),   # B: LP URL
         (2, 3, 130),   # C: 電話番号
-        (3, 4, 100),   # D: 担当者名
-        (4, 5, 200),   # E: 出稿KW
-        (5, 6, 180),   # F: 競合他社
-        (6, 7, 100),   # G: 広告ソース
-        (7, 8, 100),   # H: 取得日
+        (3, 4, 100),   # D: 取得日
     ]
     dim_requests = [
         {
@@ -81,28 +75,6 @@ def setup_sheet(spreadsheet, worksheet):
                 }
             },
             *dim_requests,
-            {
-                # H列（広告ソース）に "+" が含まれる行を緑ハイライト
-                "addConditionalFormatRule": {
-                    "rule": {
-                        "ranges": [{"sheetId": sheet_id, "startRowIndex": 1}],
-                        "booleanRule": {
-                            "condition": {
-                                "type": "CUSTOM_FORMULA",
-                                "values": [
-                                    {"userEnteredValue": '=ISNUMBER(SEARCH("+",G2))'}
-                                ]
-                            },
-                            "format": {
-                                "backgroundColor": {
-                                    "red": 0.776, "green": 0.937, "blue": 0.808
-                                }
-                            }
-                        }
-                    },
-                    "index": 0
-                }
-            }
         ]
     }
     spreadsheet.batch_update(requests_body)
@@ -117,8 +89,7 @@ class SheetsWriter:
         self.batch_size = batch_size
         self.batch_timeout = batch_timeout
         self._shutdown = shutdown_event
-        self._heartbeat = heartbeat_callback  # 429待機中のbeatに使用
-        # バッチ: (normalized_name, row_data) のリスト
+        self._heartbeat = heartbeat_callback
         self._batch: list[tuple[str, list]] = []
         self._last_flush = datetime.now()
         self._next_row = self._get_next_row()
@@ -128,13 +99,39 @@ class SheetsWriter:
         return max(len(values) + 1, 2)
 
     def sync_headers(self):
-        """現在のシートのヘッダー行が HEADERS と一致しない場合のみ更新する。"""
+        """ヘッダー行が HEADERS と一致しない場合のみ更新する。
+        旧8列フォーマット（D-G列あり）が検出された場合はその列を削除してから更新する。
+        """
         try:
             current = self.worksheet.row_values(1)
-            if current != HEADERS:
-                end_col = chr(ord('A') + len(HEADERS) - 1)
-                self.worksheet.update(f'A1:{end_col}1', [HEADERS])
-                logging.info(f'[Writer] ヘッダー行を更新: {current} → {HEADERS}')
+            if current == HEADERS:
+                return
+
+            # 旧フォーマット（D-G列）からの移行: D-G列を一括削除
+            old_extra_cols = {'担当者名', '出稿KW（全て）', '競合他社', '広告ソース'}
+            if old_extra_cols & set(current):
+                try:
+                    sheet_id = self.worksheet.id
+                    spreadsheet = self.worksheet.spreadsheet
+                    spreadsheet.batch_update({
+                        "requests": [{
+                            "deleteDimension": {
+                                "range": {
+                                    "sheetId": sheet_id,
+                                    "dimension": "COLUMNS",
+                                    "startIndex": 3,  # D列（0始まり）
+                                    "endIndex": 7,    # G列の次（exclusive）
+                                }
+                            }
+                        }]
+                    })
+                    logging.info('[Writer] 旧フォーマットのD-G列を削除しました')
+                except Exception as e:
+                    logging.warning(f'[Writer] 旧列削除失敗: {e}')
+
+            end_col = chr(ord('A') + len(HEADERS) - 1)
+            self.worksheet.update(f'A1:{end_col}1', [HEADERS])
+            logging.info(f'[Writer] ヘッダー行を更新: {current} → {HEADERS}')
         except Exception as e:
             logging.warning(f'[Writer] ヘッダー同期失敗: {e}')
 
@@ -148,10 +145,6 @@ class SheetsWriter:
             data['company_name'],
             data['lp_url'],
             phone_display,
-            data.get('contact_name', '') or '',
-            data.get('all_keywords') or data.get('keyword', ''),
-            data.get('competitors', '') or '',
-            data['ad_sources'],
             data['found_date'],
         ]
         self._batch.append((data.get('normalized_name', ''), row))
@@ -179,7 +172,6 @@ class SheetsWriter:
                 self._batch.clear()
                 self._last_flush = datetime.now()
                 logging.info(f'Sheets書き込み: {len(rows)}件 (行{start_row}〜{start_row + len(rows) - 1})')
-                # 各アイテムの正確な行番号を返す
                 return [(name, start_row + i) for i, name in enumerate(names)]
 
             except gspread.exceptions.APIError as e:

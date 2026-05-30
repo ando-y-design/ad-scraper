@@ -1,5 +1,12 @@
 # 機密情報
 config.json
+
+# アカウント別設定（各PCで独自管理）
+utils/keyword_data.py
+
+# 実行時に生成されるファイル
+control.json
+status.html
 credentials.json
 *.env
 .env*

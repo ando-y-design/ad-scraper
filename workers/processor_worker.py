@@ -65,7 +65,7 @@ def is_blocked_domain(domain: str) -> bool:
 # ─────────────────────────────────────────────
 # THREAD 2: 情報取得・解析（並列処理）
 # ─────────────────────────────────────────────
-_PROCESSOR_WORKERS = 4  # LP取得の並列数（PC負荷軽減のため8→4）
+_PROCESSOR_WORKERS = 1  # LP取得を逐次処理（PC負荷軽減）
 
 
 def _process_one_lp(item: dict, conn=None) -> dict | None:
