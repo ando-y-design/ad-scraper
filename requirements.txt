@@ -9,3 +9,5 @@ lxml
 psutil>=5.9
 ngrok
 google-api-python-client
+
+anthropic
