@@ -97,6 +97,16 @@ def _process_one_lp(item: dict, conn=None) -> dict | None:
         logging.debug(f'[Processor] テスト/デモURLをスキップ: {lp_url}')
         return None
 
+    # 記事/コラム/ブログページを除外（会社情報が取れない）
+    if _re.search(
+        r'/(column|columns|article|articles|blog|blogs|media|news|topics|'
+        r'knowledge|magazine|guide|howto|faq|qa|help|feature|special|'
+        r'column\d|media\d|note|journal|report|review|ranking|compare)/',
+        lp_url, flags=_re.IGNORECASE
+    ):
+        logging.debug(f'[Processor] 記事/コラムURLをスキップ: {lp_url}')
+        return None
+
     if is_duplicate(conn, '', base_domain, ''):
         existing = conn.execute(
             'SELECT normalized_name FROM companies WHERE base_url=?', (base_domain,)
