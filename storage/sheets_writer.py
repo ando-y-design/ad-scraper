@@ -11,7 +11,11 @@ SCOPES = [
     'https://www.googleapis.com/auth/drive',
 ]
 
-HEADERS = ['会社名', 'LP URL', '電話番号', '取得日']
+HEADERS = [
+    'リスト持主', 'CRM', 'キーワード', '広告ソース', '取得日時', 'ランク',
+    '会社名', 'LP URL', '電話番号',
+    '担当名', '話した内容', '前回', '架電結果', '次回',
+]
 
 
 def get_sheets_client(credentials_path: str):
@@ -27,13 +31,23 @@ def get_worksheet(client, sheet_id: str):
 def setup_sheet(spreadsheet, worksheet):
     sheet_id = worksheet.id
 
-    worksheet.update('A1:D1', [HEADERS])
+    worksheet.update('A1:N1', [HEADERS])
 
     col_widths = [
-        (0, 1, 180),   # A: 会社名
-        (1, 2, 280),   # B: LP URL
-        (2, 3, 130),   # C: 電話番号
-        (3, 4, 100),   # D: 取得日
+        (0,  1,  80),   # A: リスト持主
+        (1,  2,  50),   # B: CRM
+        (2,  3, 160),   # C: キーワード
+        (3,  4, 100),   # D: 広告ソース
+        (4,  5, 110),   # E: 取得日時
+        (5,  6,  60),   # F: ランク
+        (6,  7, 180),   # G: 会社名
+        (7,  8, 280),   # H: LP URL
+        (8,  9, 130),   # I: 電話番号
+        (9,  10, 80),   # J: 担当名
+        (10, 11, 160),  # K: 話した内容
+        (11, 12, 100),  # L: 前回
+        (12, 13, 100),  # M: 架電結果
+        (13, 14, 100),  # N: 次回
     ]
     dim_requests = [
         {
@@ -107,30 +121,7 @@ class SheetsWriter:
             if current == HEADERS:
                 return
 
-            # 旧フォーマット（D-G列）からの移行: D-G列を一括削除
-            old_extra_cols = {'担当者名', '出稿KW（全て）', '競合他社', '広告ソース'}
-            if old_extra_cols & set(current):
-                try:
-                    sheet_id = self.worksheet.id
-                    spreadsheet = self.worksheet.spreadsheet
-                    spreadsheet.batch_update({
-                        "requests": [{
-                            "deleteDimension": {
-                                "range": {
-                                    "sheetId": sheet_id,
-                                    "dimension": "COLUMNS",
-                                    "startIndex": 3,  # D列（0始まり）
-                                    "endIndex": 7,    # G列の次（exclusive）
-                                }
-                            }
-                        }]
-                    })
-                    logging.info('[Writer] 旧フォーマットのD-G列を削除しました')
-                except Exception as e:
-                    logging.warning(f'[Writer] 旧列削除失敗: {e}')
-
-            end_col = chr(ord('A') + len(HEADERS) - 1)
-            self.worksheet.update(f'A1:{end_col}1', [HEADERS])
+            self.worksheet.update('A1:N1', [HEADERS])
             logging.info(f'[Writer] ヘッダー行を更新: {current} → {HEADERS}')
         except Exception as e:
             logging.warning(f'[Writer] ヘッダー同期失敗: {e}')
@@ -140,12 +131,21 @@ class SheetsWriter:
         データを追加する。フラッシュが実行された場合は
         [(normalized_name, sheet_row), ...] を返す。それ以外はNone。
         """
-        phone_display = data.get('phone') or ''
         row = [
-            data['company_name'],
-            data['lp_url'],
-            phone_display,
-            data['found_date'],
+            '',                                  # リスト持主（手動）
+            '',                                  # CRM（手動）
+            data.get('keyword') or '',           # キーワード
+            data.get('ad_sources') or '',        # 広告ソース
+            data.get('found_date') or '',        # 取得日時
+            data.get('rank') or '',              # ランク
+            data.get('company_name') or '',      # 会社名
+            data.get('lp_url') or '',            # LP URL
+            data.get('phone') or '',             # 電話番号
+            '',                                  # 担当名（手動）
+            '',                                  # 話した内容（手動）
+            '',                                  # 前回（手動）
+            '',                                  # 架電結果（手動）
+            '',                                  # 次回（手動）
         ]
         self._batch.append((data.get('normalized_name', ''), row))
         elapsed = (datetime.now() - self._last_flush).total_seconds()
