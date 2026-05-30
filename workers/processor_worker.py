@@ -156,6 +156,9 @@ def _process_one_lp(item: dict, conn=None) -> dict | None:
     competitors = get_competitors(conn, keyword, normalized, area_name=area_name)
     competitors_str = ' / '.join(competitors) if competitors else ''
 
+    from processors.rank_calculator import calc_rank
+    rank = calc_rank(source, 1)
+
     return {
         'company_name': company_name.strip(),
         'normalized_name': normalized,
@@ -171,6 +174,7 @@ def _process_one_lp(item: dict, conn=None) -> dict | None:
         'lp_headline': lp_headline,
         'competitors': competitors_str,
         'industry': classify_industry(keyword),
+        'rank': rank,
     }
 
 
