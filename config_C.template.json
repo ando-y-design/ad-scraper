@@ -1,0 +1,61 @@
+{
+  "nta_api_key": "YOUR_NTA_API_KEY",
+  "anthropic_api_key": "YOUR_ANTHROPIC_API_KEY",
+  "assigned_industries": ["金融保険", "士業コンサル", "医療美容"],
+  "areas": [
+    {"name": "東京", "lat": 35.6762, "lng": 139.6503, "serp_location": "Tokyo,Japan"},
+    {"name": "大阪", "lat": 34.6937, "lng": 135.5023, "serp_location": "Osaka,Japan"},
+    {"name": "名古屋", "lat": 35.1815, "lng": 136.9066, "serp_location": "Nagoya,Japan"},
+    {"name": "福岡", "lat": 33.5904, "lng": 130.4017, "serp_location": "Fukuoka,Japan"},
+    {"name": "札幌", "lat": 43.0618, "lng": 141.3545, "serp_location": "Sapporo,Japan"},
+    {"name": "仙台", "lat": 38.2682, "lng": 140.8694, "serp_location": "Sendai,Japan"},
+    {"name": "広島", "lat": 34.3853, "lng": 132.4553, "serp_location": "Hiroshima,Japan"},
+    {"name": "京都", "lat": 35.0116, "lng": 135.7681, "serp_location": "Kyoto,Japan"},
+    {"name": "神戸", "lat": 34.6901, "lng": 135.1956, "serp_location": "Kobe,Japan"},
+    {"name": "横浜", "lat": 35.4437, "lng": 139.638, "serp_location": "Yokohama,Japan"}
+  ],
+  "priority_keywords": [],
+  "serp_apis": [
+    {
+      "provider": "hasdata",
+      "key": "YOUR_HASDATA_API_KEY"
+    }
+  ],
+  "google_sheets": {
+    "sheet_id": "1WjJjaVyRKKIVQ2JHyUAS79SxC5BvAbFVN8PTSIy-2XM",
+    "service_account_key_path": "credentials.json"
+  },
+  "sources": {
+    "google": true,
+    "yahoo": true,
+    "meta": true,
+    "google_first": true,
+    "yahoo2": false
+  },
+  "timing": {
+    "min_delay_seconds": 60,
+    "max_delay_seconds": 300,
+    "keyword_cooling_hours": 24,
+    "meta_keyword_cooling_hours": 48,
+    "batch_size": 50,
+    "batch_timeout_seconds": 300
+  },
+  "filters": {
+    "keyword_archive_days": 14,
+    "blocked_domains": [
+      "suumo.jp", "hotpepper.jp", "mynavi.jp", "rikunabi.com", "doda.jp",
+      "kakaku.com", "tabelog.com", "jalan.net", "athome.co.jp", "homes.co.jp",
+      "indeed.com", "hellowork.go.jp", "recruit.co.jp", "townwork.net", "baitoru.com",
+      "amazon.co.jp", "amazon.com", "amzn.asia", "amzn.to", "221616.com",
+      "rakuten.co.jp", "yahoo.co.jp", "google.co.jp", "instagram.com", "facebook.com",
+      "twitter.com", "tiktok.com", "youtube.com", "wikipedia.org", "go.jp", "ne.jp"
+    ]
+  },
+  "watchdog": {"check_interval_seconds": 30, "max_restart_per_hour": 3},
+  "status_server": {"enabled": true, "port": 8080},
+  "drive_share_emails": [],
+  "ngrok": {"enabled": false, "authtoken": "", "domain": ""},
+  "auto_code_repair": false,
+  "phone_strategy": "enterprise",
+  "meta_api": {"enabled": false, "app_id": "", "app_secret": ""}
+}
