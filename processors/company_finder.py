@@ -2747,4 +2747,13 @@ def find_company_info(
         _record_phones([phone])
 
     phones_str = ' / '.join(_extra_phones) if _extra_phones else None
-    return company, phone, phones_str, contact_name, lp_headline
+
+    # 広告シグナル抽出（追加フェッチなし・既取得soupを使用）
+    try:
+        from processors.rank_calculator import extract_ad_signals
+        _soup_for_signals = lp_soup_for_links if 'lp_soup_for_links' in dir() else None
+        ad_signals = extract_ad_signals(lp_url, _soup_for_signals)
+    except Exception:
+        ad_signals = {}
+
+    return company, phone, phones_str, contact_name, lp_headline, ad_signals
