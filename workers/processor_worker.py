@@ -133,6 +133,12 @@ def _process_one_lp(item: dict, conn=None) -> dict | None:
         logging.debug(f'[Processor] 会社名/電話番号取得失敗: {lp_url}')
         return None
 
+    # フリーダイヤル（0120/0800/0570/0990）のみの場合はスキップ
+    from processors.phone_finder import is_freephone
+    if is_freephone(phone):
+        logging.debug(f'[Processor] フリーダイヤルのみのためスキップ: {phone} / {lp_url}')
+        return None
+
     normalized = normalize_company(company_name)
 
     if is_duplicate(conn, normalized, base_domain, phone):
