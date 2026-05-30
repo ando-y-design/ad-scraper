@@ -45,16 +45,7 @@ def auto_refill_if_low(conn, source: str, cooling_hours: int = 0,
     new_kws = [kw for kw in reserve if kw not in existing]
 
     if not new_kws:
-        # リザーブ枯渇 → まずClaude APIで新KW生成を試みる
-        try:
-            from utils.kw_generator import generate_keywords
-            generated = generate_keywords(conn, source, count=batch_size)
-            if generated > 0:
-                return generated
-        except Exception as e:
-            logging.warning(f'[Refill] Claude KW生成失敗: {e}')
-
-        # Claude生成も失敗 → アーカイブ済みキーワードをリセット（フォールバック）
+        # リザーブ枯渇 → アーカイブ済みを古い順にリセット（Tier1に戻す）
         rows = conn.execute(
             f'''SELECT keyword FROM keywords
                 WHERE source IN ({placeholders}) AND is_archived = 1
@@ -66,7 +57,7 @@ def auto_refill_if_low(conn, source: str, cooling_hours: int = 0,
         for (kw,) in rows:
             conn.execute('UPDATE keywords SET is_archived = 0, last_searched = NULL WHERE keyword = ?', (kw,))
         conn.commit()
-        logging.info(f'[Refill] アーカイブ済みキーワードをリセット: {len(rows)}件 ({source})')
+        logging.info(f'[Refill] キーワードサイクルリセット: {len(rows)}件 ({source})')
         return len(rows)
 
     selected = random.sample(new_kws, min(batch_size, len(new_kws)))
