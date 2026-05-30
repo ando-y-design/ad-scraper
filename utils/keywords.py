@@ -3,6 +3,7 @@ import random
 from datetime import datetime, timedelta
 
 from utils.keyword_data import (
+    KEYWORD_GROUPS,
     GOOGLE_YAHOO_KEYWORDS,
     META_KEYWORDS,
     RESERVE_GOOGLE_YAHOO_KEYWORDS,
@@ -86,30 +87,41 @@ def auto_refill_if_low(conn, source: str, cooling_hours: int = 0,
 
 
 def init_keywords(conn):
+    try:
+        from state import config
+        assigned = config.get('assigned_industries', [])
+    except Exception:
+        assigned = []
+
     existing = {
         row[0]
         for row in conn.execute('SELECT keyword FROM keywords').fetchall()
     }
 
     added = 0
-    for kw in GOOGLE_YAHOO_KEYWORDS:
-        if kw not in existing:
-            conn.execute(
-                'INSERT OR IGNORE INTO keywords (keyword, source) VALUES (?, ?)',
-                (kw, 'google_yahoo')
-            )
-            added += 1
-
-    for kw in META_KEYWORDS:
-        if kw not in existing:
-            conn.execute(
-                'INSERT OR IGNORE INTO keywords (keyword, source) VALUES (?, ?)',
-                (kw, 'meta')
-            )
-            added += 1
+    for industry, data in KEYWORD_GROUPS.items():
+        if assigned and industry not in assigned:
+            continue
+        for kw in data.get('google_yahoo', []):
+            if kw not in existing:
+                conn.execute(
+                    'INSERT OR IGNORE INTO keywords (keyword, source) VALUES (?, ?)',
+                    (kw, 'google_yahoo')
+                )
+                existing.add(kw)
+                added += 1
+        for kw in data.get('meta', []):
+            if kw not in existing:
+                conn.execute(
+                    'INSERT OR IGNORE INTO keywords (keyword, source) VALUES (?, ?)',
+                    (kw, 'meta')
+                )
+                existing.add(kw)
+                added += 1
 
     conn.commit()
-    logging.info(f'キーワード初期化: {added}件追加')
+    label = f'業界フィルタ: {assigned}' if assigned else '全業界'
+    logging.info(f'キーワード初期化: {added}件追加 ({label})')
 
 
 def get_next_keyword(

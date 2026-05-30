@@ -86,9 +86,7 @@ def _run_yahoo_worker(name: str, profile_dir):
                     min_delay = config.get('timing', {}).get('min_delay_seconds', 30)
                     max_delay = config.get('timing', {}).get('max_delay_seconds', 180)
                     boost = _get_boost_patterns()
-                    all_areas = config.get('areas', [])
-                    assigned = config.get('assigned_areas', [])
-                    areas = [a for a in all_areas if not assigned or a['name'] in assigned]
+                    areas = config.get('areas', [])
 
                     try:
                         beat(name)

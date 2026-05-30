@@ -16,17 +16,27 @@ def _get_existing_keywords(conn: sqlite3.Connection) -> set[str]:
     return {r[0] for r in rows}
 
 
+def _get_assigned_industries() -> list[str]:
+    try:
+        from state import config
+        return config.get('assigned_industries', [])
+    except Exception:
+        return []
+
+
 def _build_prompt(source: str, existing: set[str], count: int) -> str:
+    assigned = _get_assigned_industries()
+    industry_hint = f"担当業界: {', '.join(assigned)}。" if assigned else ''
+
     if source == 'meta':
         context = (
-            "Meta（Instagram/Facebook）広告に出稿している企業を見つけるための検索キーワードを生成してください。"
-            "BtoC向け高単価サービス（美容・健康・通販・金融・不動産・スクール等）を中心に。"
+            f"Meta（Instagram/Facebook）広告に出稿している企業を見つけるための検索キーワードを生成してください。"
+            f"{industry_hint}BtoC向け高単価サービスを中心に。"
         )
     else:
         context = (
-            "Google/Yahoo検索広告に出稿している企業を見つけるための検索キーワードを生成してください。"
-            "広告費を使っているBtoB・BtoC企業（転職・不動産・士業・IT・医療・建設等）を中心に。"
-            "テレアポ営業で決裁者に繋がりやすい業種を優先してください。"
+            f"Google/Yahoo検索広告に出稿している企業を見つけるための検索キーワードを生成してください。"
+            f"{industry_hint}テレアポ営業で決裁者に繋がりやすい業種を優先してください。"
         )
 
     existing_sample = list(existing)[:50]
