@@ -13,7 +13,6 @@
     {"name": "神戸", "lat": 34.6901, "lng": 135.1956, "serp_location": "Kobe,Japan"},
     {"name": "横浜", "lat": 35.4437, "lng": 139.638, "serp_location": "Yokohama,Japan"}
   ],
-  "assigned_industries": ["転職採用", "IT_SaaS", "広告マーケ"],
   "priority_keywords": [],
   "serp_apis": [
     {

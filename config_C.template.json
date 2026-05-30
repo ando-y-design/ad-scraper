@@ -1,7 +1,6 @@
 {
   "nta_api_key": "YOUR_NTA_API_KEY",
   "anthropic_api_key": "YOUR_ANTHROPIC_API_KEY",
-  "assigned_industries": ["金融保険", "士業コンサル", "医療美容"],
   "areas": [
     {"name": "東京", "lat": 35.6762, "lng": 139.6503, "serp_location": "Tokyo,Japan"},
     {"name": "大阪", "lat": 34.6937, "lng": 135.5023, "serp_location": "Osaka,Japan"},
