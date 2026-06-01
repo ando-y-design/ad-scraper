@@ -1,3 +1,4 @@
+from __future__ import annotations
 """
 status.html を生成するモジュール。Watchdogから5分ごとに呼ばれる。
 """

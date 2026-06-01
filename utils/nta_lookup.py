@@ -1,3 +1,4 @@
+from __future__ import annotations
 """
 国税庁法人番号システムWeb-API クライアント
 
@@ -12,12 +13,12 @@ API仕様: https://www.houjin-bangou.nta.go.jp/webapi/
 """
 import json
 import logging
+import threading
 import time
 import urllib.error
 import urllib.parse
 import urllib.request
 import xml.etree.ElementTree as ET
-from functools import lru_cache
 from pathlib import Path
 
 BASE_DIR = Path(__file__).parent.parent
@@ -31,8 +32,10 @@ _MAX_HIT = 5
 _cache: dict[str, list[dict]] = {}
 _CACHE_MAX = 500
 
-# レートリミット: 1秒に1リクエスト以上送らない
+# レートリミット: 8スレッド共有・1.5秒間隔（スレッドセーフ）
+_rate_lock = threading.Lock()
 _last_request_time: float = 0.0
+_MIN_INTERVAL = 1.5
 
 # 404受信後はセッション中の全APIコールを無効化
 _api_disabled: bool = False
@@ -59,8 +62,8 @@ def search_by_name(name: str, mode: int = 2) -> list[dict]:
     会社名で法人番号APIを検索する。
 
     Args:
-        name: 検索する会社名（部分一致OK）
-        mode: 1=前方一致, 2=部分一致
+        name: 検索する会社名（部分一致）
+        mode: 未使用（API互換性のため残存）
 
     Returns:
         list of {
@@ -91,24 +94,24 @@ def search_by_name(name: str, mode: int = 2) -> list[dict]:
     if cache_key in _cache:
         return _cache[cache_key]
 
-    # レートリミット: 最低1秒間隔
-    elapsed = time.time() - _last_request_time
-    if elapsed < 1.0:
-        time.sleep(1.0 - elapsed)
+    # レートリミット: 8スレッド共有、最低1.5秒間隔（スレッドセーフ）
+    with _rate_lock:
+        elapsed = time.time() - _last_request_time
+        if elapsed < _MIN_INTERVAL:
+            time.sleep(_MIN_INTERVAL - elapsed)
+        _last_request_time = time.time()
 
     params = urllib.parse.urlencode({
-        'applicationId': app_id,
+        'id': app_id,
         'name': name,
-        'type': '01',       # XML形式
-        'mode': str(mode),
-        'target': '1',      # 法人名のみ（2=商号, 3=両方）
+        'type': '12',       # XML形式（Unicode）
+        'target': '1',      # 法人名のみ
         'hit_count': str(_MAX_HIT),
         'close': '0',       # 閉鎖法人を除外
     })
     url = f'{_API_BASE}/name?{params}'
 
     try:
-        _last_request_time = time.time()
         with urllib.request.urlopen(url, timeout=8) as r:
             raw = r.read()
 
@@ -195,7 +198,18 @@ def verify_and_normalize(raw_name: str) -> dict:
             'confidence': 'none',
         }
 
-    # 完全一致を優先
+    _LEGAL_STRIP = re.compile(
+        r'(株式会社|有限会社|合同会社|合資会社|合名会社|医療法人|社会福祉法人|'
+        r'宗教法人|一般社団法人|公益社団法人|一般財団法人|公益財団法人|'
+        r'学校法人|NPO法人|弁護士法人|税理士法人)'
+    )
+
+    def _core(name: str) -> str:
+        return _LEGAL_STRIP.sub('', name).strip()
+
+    search_core = _core(search_name)
+
+    # 完全一致を優先（raw_nameそのもの、またはコア名一致）
     for h in hits:
         if h['name'] == raw_name:
             return {
@@ -206,14 +220,25 @@ def verify_and_normalize(raw_name: str) -> dict:
                 'confidence': 'exact',
             }
 
-    # 部分一致: 最初のヒットを使用
-    best = hits[0]
+    # 部分一致: NTA結果のコア名 == 検索コア名 の場合のみ許可
+    # （「コープ東北」→「コープ東北グリーンエネルギー株式会社」のような誤変換を防ぐ）
+    for h in hits:
+        h_core = _core(h['name'])
+        if h_core == search_core:
+            return {
+                'verified': True,
+                'official_name': h['name'],
+                'corporate_number': h['corporate_number'],
+                'address': h['address'],
+                'confidence': 'partial',
+            }
+
     return {
-        'verified': True,
-        'official_name': best['name'],
-        'corporate_number': best['corporate_number'],
-        'address': best['address'],
-        'confidence': 'partial',
+        'verified': False,
+        'official_name': raw_name,
+        'corporate_number': '',
+        'address': '',
+        'confidence': 'none',
     }
 
 

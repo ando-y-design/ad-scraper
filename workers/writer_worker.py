@@ -1,3 +1,4 @@
+from __future__ import annotations
 """SQLite + Sheets 書き込みワーカー"""
 import logging
 import queue

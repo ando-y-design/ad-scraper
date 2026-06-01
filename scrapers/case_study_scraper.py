@@ -1,3 +1,4 @@
+from __future__ import annotations
 """
 競合代理店の「導入事例」ページから広告主企業を逆引きするスクレイパー
 

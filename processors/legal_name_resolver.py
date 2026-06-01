@@ -1,3 +1,4 @@
+from __future__ import annotations
 """
 英語法人格サフィックス（Inc./Corp./Ltd. 等）を含む会社名を
 国税庁法人番号公表サイト WebAPI で正式な日本語法人登録名に解決する。
@@ -41,7 +42,11 @@ _HEADERS = {
 }
 
 # プロセス内メモリキャッシュ（同一名の重複 API 呼び出しを防ぐ）
-_cache: dict[str, str | None] = {}
+# (resolved_name, corporate_number) のタプルを保持
+_cache: dict[str, tuple[str | None, str | None]] = {}
+
+# 法人番号専用キャッシュ（日本語名 → 法人番号）
+_corp_num_cache: dict[str, str | None] = {}
 
 # API キー未設定の警告を 1 回だけ出す
 _warned_no_key = False
@@ -90,41 +95,74 @@ def resolve_legal_name(name: str, api_key: str) -> str | None:
 
     # キャッシュヒット
     if name in _cache:
-        return _cache[name]
+        return _cache[name][0]
 
     # 末尾英語サフィックスを除いた検索クエリを作成
     core_name = _EN_LEGAL_SUFFIX_RE.sub('', name).strip()
     if not core_name:
-        _cache[name] = None
+        _cache[name] = (None, None)
         return None
 
-    result = _query_nta(core_name, api_key)
-    _cache[name] = result
+    resolved_name, corp_number = _query_nta(core_name, api_key)
+    _cache[name] = (resolved_name, corp_number)
 
-    if result:
-        logging.info(f'[NTA] 法人登録名解決: "{name}" → "{result}"')
+    if resolved_name:
+        logging.info(f'[NTA] 法人登録名解決: "{name}" → "{resolved_name}"')
     else:
         logging.debug(f'[NTA] 未解決（NTA にヒットなし）: "{name}"')
 
-    return result
+    return resolved_name
+
+
+def lookup_corporate_number(name: str, api_key: str) -> str | None:
+    """
+    会社名から国税庁 WebAPI 経由で法人番号（13桁）を取得して返す。
+    API キーが未設定・ヒットなしの場合は None を返す。
+
+    日本語法人名・英語サフィックス名どちらにも対応。
+    結果はプロセス内でキャッシュされる。
+    """
+    if not api_key or not name:
+        return None
+
+    if name in _corp_num_cache:
+        return _corp_num_cache[name]
+
+    # resolve_legal_name キャッシュに法人番号がある場合はそちらを使う
+    if name in _cache:
+        corp_number = _cache[name][1]
+        _corp_num_cache[name] = corp_number
+        return corp_number
+
+    # 法人格サフィックス（日英）を除去してコア名を作成
+    core = _JP_LEGAL_RE.sub('', name).strip()
+    core = _EN_LEGAL_SUFFIX_RE.sub('', core).strip()
+    if not core:
+        _corp_num_cache[name] = None
+        return None
+
+    _, corp_number = _query_nta(core, api_key)
+    _corp_num_cache[name] = corp_number
+
+    if corp_number:
+        logging.info(f'[NTA] 法人番号取得: "{name}" → {corp_number}')
+    else:
+        logging.debug(f'[NTA] 法人番号未取得: "{name}"')
+
+    return corp_number
 
 
 # ── 内部処理 ─────────────────────────────────────────────────────────────────
 
-def _query_nta(core_name: str, api_key: str) -> str | None:
-    """NTA API にリクエストして最適な法人名候補を返す。"""
+def _query_nta(core_name: str, api_key: str) -> tuple[str | None, str | None]:
+    """NTA API にリクエストして (最適法人名, 法人番号) を返す。"""
     try:
         resp = requests.get(
             _NTA_API_URL,
             params={
+                'id': api_key,
                 'name': core_name,
-                'type': '12',   # 部分一致（前方・後方含む）
-                'kind': '01',   # 国内普通法人のみ
-                'change': '0',
-                'close': '1',   # 現存法人のみ（廃業除く）
-                'from': '1',
-                'count': '10',
-                'application': api_key,
+                'type': '12',   # XML形式
             },
             headers=_HEADERS,
             timeout=10,
@@ -132,41 +170,50 @@ def _query_nta(core_name: str, api_key: str) -> str | None:
 
         if resp.status_code == 400:
             logging.warning(f'[NTA] API bad request (キー不正？): "{core_name}"')
-            return None
+            return None, None
         if resp.status_code == 404:
-            return None
+            return None, None
         if resp.status_code != 200:
             logging.warning(f'[NTA] HTTP {resp.status_code}: "{core_name}"')
-            return None
+            return None, None
 
         root = ET.fromstring(resp.content)
 
-        # 日本語法人格を含む候補だけを収集
-        candidates: list[str] = []
+        # 日本語法人格を含む候補だけを収集 (name, corporateNumber)
+        candidates: list[tuple[str, str]] = []
         for corp in root.findall('.//corporation'):
             name_elem = corp.find('name')
+            number_elem = corp.find('corporateNumber')
             if name_elem is not None and name_elem.text:
                 corp_name = name_elem.text.strip()
                 if corp_name and _JP_LEGAL_RE.search(corp_name):
-                    candidates.append(corp_name)
+                    corp_number = (
+                        number_elem.text.strip()
+                        if number_elem is not None and number_elem.text
+                        else ''
+                    )
+                    candidates.append((corp_name, corp_number))
 
         if not candidates:
-            return None
+            return None, None
         if len(candidates) == 1:
             return candidates[0]
 
         # 複数ヒット: コア名との文字一致スコアで最良候補を選ぶ
-        return _best_match(core_name, candidates)
+        names = [c[0] for c in candidates]
+        best_name = _best_match(core_name, names)
+        best_idx = names.index(best_name)
+        return candidates[best_idx]
 
     except ET.ParseError as e:
         logging.warning(f'[NTA] XML parse error "{core_name}": {e}')
-        return None
+        return None, None
     except requests.RequestException as e:
         logging.warning(f'[NTA] network error "{core_name}": {e}')
-        return None
+        return None, None
     except Exception as e:
         logging.warning(f'[NTA] unexpected error "{core_name}": {e}')
-        return None
+        return None, None
 
 
 def _best_match(core_name: str, candidates: list[str]) -> str:

@@ -1,3 +1,4 @@
+from __future__ import annotations
 # -*- coding: utf-8 -*-
 """Regression suite — covers core behaviors that must not break."""
 import sys

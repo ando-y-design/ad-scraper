@@ -1,3 +1,4 @@
+from __future__ import annotations
 import sqlite3
 import threading
 from pathlib import Path
@@ -38,7 +39,8 @@ def init_db() -> sqlite3.Connection:
             contact_name     TEXT,
             lp_headline      TEXT,
             all_keywords     TEXT,
-            area_name        TEXT
+            area_name        TEXT,
+            corporate_number TEXT
         );
 
         CREATE TABLE IF NOT EXISTS keywords (
@@ -74,6 +76,7 @@ def init_db() -> sqlite3.Connection:
     for col, typedef in [
         ('contact_name', 'TEXT'), ('lp_headline', 'TEXT'),
         ('all_keywords', 'TEXT'), ('area_name', 'TEXT'),
+        ('corporate_number', 'TEXT'),
     ]:
         if col not in existing_cols:
             conn.execute(f'ALTER TABLE companies ADD COLUMN {col} {typedef}')
@@ -125,13 +128,15 @@ def _remove_phone_unique_if_needed(conn: sqlite3.Connection):
             contact_name     TEXT,
             lp_headline      TEXT,
             all_keywords     TEXT,
-            area_name        TEXT
+            area_name        TEXT,
+            corporate_number TEXT
         );
 
         INSERT OR IGNORE INTO companies_v2
             SELECT id, company_name, normalized_name, lp_url, base_url,
                    phone, phones, industry, ad_sources, sheet_row, found_date,
-                   keyword, exported, contact_name, lp_headline, all_keywords, area_name
+                   keyword, exported, contact_name, lp_headline, all_keywords, area_name,
+                   corporate_number
             FROM companies;
 
         DROP TABLE companies;
@@ -212,8 +217,8 @@ def insert_company(conn: sqlite3.Connection, data: dict) -> bool:
             INSERT OR IGNORE INTO companies
               (company_name, normalized_name, lp_url, base_url, phone, phones,
                ad_sources, found_date, keyword, exported,
-               contact_name, lp_headline, all_keywords, area_name)
-            VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, 0, ?, ?, ?, ?)
+               contact_name, lp_headline, all_keywords, area_name, corporate_number)
+            VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, 0, ?, ?, ?, ?, ?)
             ''',
             (
                 data['company_name'], data['normalized_name'],
@@ -225,6 +230,7 @@ def insert_company(conn: sqlite3.Connection, data: dict) -> bool:
                 data.get('lp_headline'),
                 kw,
                 data.get('area_name'),
+                data.get('corporate_number'),
             )
         )
         conn.commit()

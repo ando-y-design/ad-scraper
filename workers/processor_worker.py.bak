@@ -1,0 +1,261 @@
+from __future__ import annotations
+"""
+processor_worker.py — LP解析ワーカー（8並列）
+
+改善点:
+  - requests.Session でコネクション再利用（速度向上）
+  - 特商法ページ由来の電話番号を最優先で採用（整合率向上）
+  - JS描画LPへのPlaywrightフォールバック（会社名・電話が両方空の場合）
+  - phone_source を result に含めてデバッグ・品質トラッキング可能に
+"""
+
+import re
+import time
+import requests
+import state
+from processors.company_finder import find_company_info, fill_missing_info, find_fixed_phone_from_hp, is_blocked
+from processors.normalizer import normalize_company_name, is_valid_company_name, is_fake_phone
+from processors.phone_finder import find_phone_numbers
+from processors.legal_name_resolver import resolve_legal_name
+from utils.logger import get_logger
+
+log = get_logger("processor")
+
+_INDUSTRY_RULES: list[tuple[list[str], str]] = [
+    (["外壁塗装", "屋根塗装", "外壁・屋根"],    "外壁・屋根塗装"),
+    (["塗装"],                                   "塗装"),
+    (["リフォーム", "リノベーション"],            "住宅リフォーム"),
+    (["引越", "引っ越し", "引越し"],              "引越"),
+    (["不動産", "賃貸", "売買", "物件", "査定"],  "不動産"),
+    (["保険"],                                   "保険"),
+    (["弁護士", "法律事務所"],                   "法律"),
+    (["税理士", "会計"],                         "税理士"),
+    (["脱毛", "エステ"],                         "美容・脱毛"),
+    (["歯科", "歯医者", "デンタル"],              "歯科"),
+    (["クリニック", "病院", "医院", "整形外科",
+      "皮膚科", "眼科", "内科"],                 "医療"),
+    (["害虫", "駆除"],                           "害虫駆除"),
+    (["給湯器", "エアコン", "設備工事"],          "設備工事"),
+    (["解体", "撤去"],                           "解体"),
+    (["防水", "雨漏り"],                         "防水"),
+    (["葬儀", "葬祭", "セレモニー"],              "葬儀"),
+    (["ペット", "トリミング"],                    "ペット"),
+    (["広告代理店", "PR会社", "広告"],            "広告"),
+    (["コインランドリー"],                        "コインランドリー"),
+    (["結婚", "婚活", "マリッジ"],                "婚活"),
+    (["学院", "塾", "スクール", "予備校"],         "教育"),
+    (["整体", "整骨", "鍼灸"],                    "整体・整骨"),
+    (["買取", "リサイクル"],                      "買取"),
+    (["太陽光", "蓄電池"],                        "太陽光"),
+]
+
+
+def classify_industry(keyword: str) -> str:
+    for keywords, label in _INDUSTRY_RULES:
+        for kw in keywords:
+            if kw in keyword:
+                return label
+    return ""
+
+_HEADERS = {
+    "User-Agent": (
+        "Mozilla/5.0 (Windows NT 10.0; Win64; x64) "
+        "AppleWebKit/537.36 (KHTML, like Gecko) "
+        "Chrome/120.0.0.0 Safari/537.36"
+    ),
+    "Accept-Language": "ja,en;q=0.9",
+    "Accept": "text/html,application/xhtml+xml,application/xml;q=0.9,*/*;q=0.8",
+}
+
+
+
+def _fetch_lp(url: str, session: requests.Session) -> str | None:
+    try:
+        r = session.get(url, headers=_HEADERS, timeout=15, allow_redirects=True)
+        r.encoding = r.apparent_encoding or "utf-8"
+        return r.text
+    except Exception as e:
+        log.debug(f"LP fetch failed {url}: {e}")
+        return None
+
+
+def _fetch_lp_playwright(url: str) -> str | None:
+    """JSレンダリングが必要なLPにPlaywrightで再フェッチ"""
+    try:
+        from playwright.sync_api import sync_playwright
+        config = state.get_config()
+        headless = config.get("headless", True)
+        with sync_playwright() as p:
+            browser = p.chromium.launch(headless=headless, args=["--no-sandbox"])
+            page = browser.new_page()
+            page.goto(url, wait_until="networkidle", timeout=20000)
+            html = page.content()
+            browser.close()
+            return html
+    except Exception as e:
+        log.debug(f"Playwright LP fetch failed {url}: {e}")
+        return None
+
+
+def run(worker_id: int) -> None:
+    name = f"processor-{worker_id}"
+    log.info(f"{name} started")
+
+    # スレッドごとに Session を作成（コネクションプール再利用）
+    session = requests.Session()
+    session.headers.update(_HEADERS)
+
+    while not state.stop_event.is_set():
+        state.beat(name)
+
+        if state.pause_event.is_set():
+            time.sleep(2)
+            continue
+
+        try:
+            item = state.lp_queue.get(timeout=3)
+        except Exception:
+            continue
+
+        url = item.get("url", "")
+        keyword = item.get("keyword", "")
+        area_name = item.get("area_name", "")
+        source = item.get("source", "")
+        advertiser_name = item.get("advertiser_name", "")  # Meta由来の広告主名
+        serp_phone = item.get("serp_phone")
+
+        try:
+            if is_blocked(url):
+                log.debug(f"Blocked domain: {url}")
+                state.inc_metric("errors")
+                continue
+
+            # ── LP取得 ───────────────────────────────────────────────────────
+            html = _fetch_lp(url, session)
+            if not html:
+                state.inc_metric("errors")
+                continue
+
+            config = state.get_config()
+            nta_key = config.get("nta_api_key", "")
+
+            # ── 会社情報抽出（特商法ページ優先） ────────────────────────────
+            info = find_company_info(url, html, session=session)
+            company_name = info.get("company_name", "") or advertiser_name
+            phone = info.get("phone", "")
+            phones = info.get("phones", [])
+            phone_source = info.get("phone_source", "")
+
+            # SERP電話番号フォールバック（特商法・LP本体で取れなかった場合）
+            if not phone and serp_phone:
+                phone = serp_phone
+                phone_source = "serp"
+                log.debug(f"SERP電話番号をフォールバック採用: {phone}")
+
+            # ── Stage 2: メタ情報から補完 ───────────────────────────────────
+            if not company_name or not phone:
+                from processors.company_finder import _extract_from_meta
+                from bs4 import BeautifulSoup as _BS
+                meta_info = _extract_from_meta(_BS(html, "lxml"), html)
+                if not company_name and meta_info.get("company_name"):
+                    company_name = meta_info["company_name"]
+                    phone_source = phone_source or "meta"
+                if not phone and meta_info.get("phone"):
+                    phone = meta_info["phone"]
+                    phones = meta_info.get("phones", [])
+                    phone_source = phone_source or "meta"
+
+            # ── Stage 3: ドメイン内サブページ巡回 ──────────────────────────
+            if not company_name or not phone:
+                crawl = fill_missing_info(url, html, company_name, phone, session=session)
+                if not company_name and crawl.get("company_name"):
+                    company_name = crawl["company_name"]
+                    phone_source = "crawl"
+                if not phone and crawl.get("phone"):
+                    phone = crawl["phone"]
+                    phones = crawl.get("phones", [])
+                    phone_source = phone_source or "crawl"
+
+            # ── Stage 4: Playwrightフルレンダリング ─────────────────────────
+            if not company_name or not phone:
+                log.debug(f"Trying Playwright fallback: {url}")
+                html_js = _fetch_lp_playwright(url)
+                if html_js and len(html_js) > len(html):
+                    info = find_company_info(url, html_js, session=session)
+                    if not company_name:
+                        company_name = info.get("company_name", "") or advertiser_name
+                    if not phone:
+                        phone = info.get("phone", "")
+                        phones = info.get("phones", [])
+                    phone_source = (info.get("phone_source", "") or phone_source) + "_playwright"
+                    state.inc_metric("js_fallback")
+
+            # ── 法人名の正規化・NTA照合 ───────────────────────────────────
+            if company_name and nta_key:
+                company_name = resolve_legal_name(company_name, nta_key)
+
+            normalized = normalize_company_name(company_name)
+
+            # フリーダイヤル・IPしか取れていない場合、メインHPの特商法ページを探す
+            _digits = re.sub(r"\D", "", phone)
+            if phone and _digits.startswith(("0120", "0800", "0570", "0990", "050")):
+                fixed = find_fixed_phone_from_hp(url, html, session=session)
+                if fixed:
+                    phone = fixed
+                    phones = [fixed] + [p for p in phones if p != fixed]
+                    phone_source = phone_source + "_hp"
+
+            # 050(IP電話)しか取れなかった場合はphoneリストから除外して再評価
+            if phone and re.sub(r"\D", "", phone).startswith("050"):
+                non_ip = [p for p in phones if not re.sub(r"\D", "", p).startswith("050")]
+                phone = non_ip[0] if non_ip else ""
+                phones = non_ip
+
+            # フェイク番号（連番・全同一桁）を除外
+            if phone and is_fake_phone(phone):
+                log.debug(f"[{name}] Fake phone rejected: {phone} {url}")
+                phone = ""
+                phones = [p for p in phones if not is_fake_phone(p)]
+                if phones:
+                    phone = phones[0]
+
+            # 会社名・電話番号が両方揃っていない、または名前が不正ならスキップ
+            if not company_name or not phone or not is_valid_company_name(company_name):
+                state.inc_metric("incomplete")
+                log.debug(
+                    f"[{name}] Skipped (incomplete/invalid): "
+                    f"name='{company_name}' phone='{phone}' {url}"
+                )
+                continue
+
+            result = {
+                "company_name": company_name,
+                "normalized_name": normalized,
+                "lp_url": url,
+                "phone": phone,
+                "phones": phones,
+                "phone_source": phone_source,
+                "keyword": keyword,
+                "area_name": area_name,
+                "ad_source": source,
+                "industry": classify_industry(keyword),
+            }
+
+            state.result_queue.put(result, block=True, timeout=30)
+            state.inc_metric("lp_processed")
+            log.debug(
+                f"[{name}] {company_name or '—'} | {phone or '—'} "
+                f"(src:{phone_source}) | {url}"
+            )
+
+        except Exception as e:
+            log.error(f"{name} error processing {url}: {e}")
+            state.inc_metric("errors")
+        finally:
+            try:
+                state.lp_queue.task_done()
+            except Exception:
+                pass
+
+    session.close()
+    log.info(f"{name} exited")

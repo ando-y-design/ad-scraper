@@ -1,3 +1,4 @@
+from __future__ import annotations
 """
 自己診断モジュール: 収集成功率・エラー頻度を記録し、問題を検知する
 """

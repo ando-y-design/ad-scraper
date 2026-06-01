@@ -1,3 +1,4 @@
+from __future__ import annotations
 """情報取得・解析ワーカー（並列処理）"""
 import concurrent.futures
 import logging
@@ -127,6 +128,12 @@ def _process_one_lp(item: dict, conn=None) -> dict | None:
         ad_signals = {}
     beat('processor')
 
+    # 法人番号を取得（NTA APIキー設定済みの場合のみ）
+    corporate_number = ''
+    if company_name and nta_key:
+        from processors.legal_name_resolver import lookup_corporate_number
+        corporate_number = lookup_corporate_number(company_name, nta_key) or ''
+
     # SERP コール表示の電話番号をフォールバックとして使用
     if not phone and serp_phone:
         phone = serp_phone
@@ -205,6 +212,7 @@ def _process_one_lp(item: dict, conn=None) -> dict | None:
         'competitors': competitors_str,
         'industry': classify_industry(keyword),
         'rank': rank,
+        'corporate_number': corporate_number,
     }
 
 
