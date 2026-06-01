@@ -58,7 +58,7 @@ def writer_worker():
         if unexported:
             logging.info(f'[Writer] 未送信データ {len(unexported)}件を再送します')
             for db_row in unexported:
-                writer.add({
+                flush_results = writer.add({
                     'company_name': db_row['company_name'],
                     'normalized_name': db_row['normalized_name'],
                     'lp_url': db_row['lp_url'] or '',
@@ -70,8 +70,10 @@ def writer_worker():
                     'contact_name': db_row['contact_name'] if 'contact_name' in db_row.keys() else None,
                     'lp_headline': db_row['lp_headline'] if 'lp_headline' in db_row.keys() else None,
                     'all_keywords': db_row['all_keywords'] if 'all_keywords' in db_row.keys() else None,
-                    'competitors': '',  # 再送時は競合クエリしない
+                    'competitors': '',
                 })
+                if flush_results:
+                    _mark_batch_exported(conn, flush_results)
             flush_results = writer.flush()
             if flush_results:
                 _mark_batch_exported(conn, flush_results)
