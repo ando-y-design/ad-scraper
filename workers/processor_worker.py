@@ -1,3 +1,4 @@
+from __future__ import annotations
 """情報取得・解析ワーカー（並列処理）"""
 import concurrent.futures
 import logging
@@ -119,13 +120,14 @@ def _process_one_lp(item: dict, conn=None) -> dict | None:
     serp_phone = item.get('serp_phone')
 
     nta_key = config.get('nta_api_key', '')
-    result = find_company_info(lp_url, meta_company, nta_api_key=nta_key)
-    if len(result) == 6:
-        company_name, phone, phones_str, contact_name, lp_headline, ad_signals = result
-    else:
-        company_name, phone, phones_str, contact_name, lp_headline = result
-        ad_signals = {}
+    company_name, phone, phones_str, contact_name, lp_headline = find_company_info(lp_url, meta_company, nta_api_key=nta_key)
     beat('processor')
+
+    # 法人番号を取得（NTA APIキー設定済みの場合のみ）
+    corporate_number = ''
+    if company_name and nta_key:
+        from processors.legal_name_resolver import lookup_corporate_number
+        corporate_number = lookup_corporate_number(company_name, nta_key) or ''
 
     # SERP コール表示の電話番号をフォールバックとして使用
     if not phone and serp_phone:
@@ -147,47 +149,19 @@ def _process_one_lp(item: dict, conn=None) -> dict | None:
     normalized = normalize_company(company_name)
 
     if is_duplicate(conn, normalized, base_domain, phone):
-        existing = conn.execute(
-            'SELECT ad_sources, normalized_name, all_keywords, sheet_row FROM companies '
+        existing_src = conn.execute(
+            'SELECT ad_sources, normalized_name FROM companies '
             'WHERE normalized_name=? OR base_url=? OR phone=?',
             (normalized, base_domain, phone)
         ).fetchone()
-        if existing:
-            old_sources = existing['ad_sources'] or ''
-            update_ad_sources(conn, existing['normalized_name'], source)
-            append_keyword(conn, existing['normalized_name'], keyword)
-            # 新媒体が追加された場合はランクを再計算してSheets更新イベントを送る
-            new_sources = conn.execute(
-                'SELECT ad_sources, all_keywords FROM companies WHERE normalized_name=?',
-                (existing['normalized_name'],)
-            ).fetchone()
-            if new_sources and existing['sheet_row']:
-                from processors.rank_calculator import calc_rank, _count_sources
-                old_rank_src = _count_sources(old_sources)
-                new_rank_src = _count_sources(new_sources['ad_sources'] or '')
-                if new_rank_src > old_rank_src:
-                    new_rank = calc_rank(new_sources['ad_sources'] or '', all_keywords=new_sources['all_keywords'] or '')
-                    try:
-                        result_queue.put({
-                            '_type': 'rank_update',
-                            'sheet_row': existing['sheet_row'],
-                            'rank': new_rank,
-                            'normalized_name': existing['normalized_name'],
-                        }, timeout=5)
-                    except Exception:
-                        pass
+        if existing_src:
+            update_ad_sources(conn, existing_src['normalized_name'], source)
+            append_keyword(conn, existing_src['normalized_name'], keyword)
         return None
 
     # 同業種 × 同エリアの競合他社名を付与（Sheets表示用）
     competitors = get_competitors(conn, keyword, normalized, area_name=area_name)
     competitors_str = ' / '.join(competitors) if competitors else ''
-
-    from processors.rank_calculator import calc_rank
-    rank = calc_rank(
-        keyword=keyword,
-        lp_url=lp_url,
-        ad_signals=ad_signals,
-    )
 
     return {
         'company_name': company_name.strip(),
@@ -204,7 +178,7 @@ def _process_one_lp(item: dict, conn=None) -> dict | None:
         'lp_headline': lp_headline,
         'competitors': competitors_str,
         'industry': classify_industry(keyword),
-        'rank': rank,
+        'corporate_number': corporate_number,
     }
 
 

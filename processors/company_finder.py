@@ -1,3 +1,4 @@
+from __future__ import annotations
 import html as _html
 import json
 import logging
@@ -451,10 +452,26 @@ _GARBAGE_RE = re.compile(
     r'|企業情報|会社情報|サービス情報|運営情報|運営者情報'
     r'|本利用規約|本規約|利用規約|以下|募集代理店'
     r'|PR\s*[：:]|広告'
-    r'|運営会社[\/／]|販売業者[：:]|事業者名[：:]'
+    r'|運営会社[\/／]|販売業者[：:]?|事業者名[：:]?|商号[：:を]|屋号'
     r'|例[：:＊\s]|例えば[：:＊\s]|例）|例示|サンプル[：:\s]|テスト[：:\s]'
+    # 今回のバッチで学んだゴミパターン
+    r'|よくあるご質問|プライバシーポリシー|基本情報|価格プラン'
+    r'|家業を継が|オーナー専用|令和\S*年'
+    r'|ImageMagick|Google LLC'
+    r'|販売業者名|事業者名称'
     r')',
     re.IGNORECASE
+)
+
+# 末尾に事業部・支店等が付いている → 正式社名ではない
+_UNIT_SUFFIX_RE = re.compile(
+    r'(?:事業部|営業所|出張所)$'
+)
+
+# 不可能な法人格の組み合わせ（行政書士法人+株式会社 など）
+_IMPOSSIBLE_LEGAL_COMBO_RE = re.compile(
+    r'(?:行政書士法人|司法書士法人|弁護士法人|税理士法人).{0,20}(?:株式会社|有限会社)|'
+    r'(?:株式会社|有限会社).{0,20}(?:行政書士法人|司法書士法人)'
 )
 
 # 「株式会社」だけで終わる不完全な会社名を拒否
@@ -720,6 +737,12 @@ def _is_valid_company(name: str) -> bool:
         return False
     if not _LEGAL_ENTITY_RE.search(name):
         return False
+    # 不可能な法人格の組み合わせ（行政書士法人+株式会社 等）
+    if _IMPOSSIBLE_LEGAL_COMBO_RE.search(name):
+        return False
+    # 末尾に事業部・支店が残っている → 正式名称ではない
+    if _UNIT_SUFFIX_RE.search(name):
+        return False
     return True
 
 
@@ -744,6 +767,10 @@ def _is_valid_company_labeled(name: str) -> bool:
     if _GARBAGE_RE.search(name):
         return False
     if _INCOMPLETE_RE.match(name):
+        return False
+    if _IMPOSSIBLE_LEGAL_COMBO_RE.search(name):
+        return False
+    if _UNIT_SUFFIX_RE.search(name):
         return False
     if re.match(r'^[\d\s\-\(\)\+]+$', name):
         return False

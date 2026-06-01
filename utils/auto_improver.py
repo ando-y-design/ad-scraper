@@ -1,3 +1,4 @@
+from __future__ import annotations
 """
 自律改善エンジン v1 — Measure → Diagnose → Fix → Record
 

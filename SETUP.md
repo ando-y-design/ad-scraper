@@ -1,56 +1,88 @@
-# セットアップ手順（新しいPC）
+# セットアップ手順
 
-## 1. リポジトリをclone
+パソコンに慣れていなくても、この手順通りにやれば動きます。
 
-```
-git clone https://github.com/amdwtwitter-ai/ad-scraper.git
-cd ad-scraper
-```
+---
 
-## 2. 依存パッケージをインストール
+## ステップ1：Pythonをインストール
 
-```
-pip install -r requirements.txt
-playwright install chromium
-```
+1. https://www.python.org/downloads/ を開く
+2. 「Download Python」ボタンをクリックしてインストール
+3. インストール画面で **「Add Python to PATH」にチェックを入れる**（重要）
 
-## 3. config.json を作成（このPCの設定）
+> すでにインストール済みの場合はスキップ
 
-`config.json` は共有されないので、このPCの情報を設定する。
+---
 
-```
-cp config.example.json config.json
-```
+## ステップ2：ターミナルを開く
 
-`config.json` を開いて以下を設定：
-- `nta_api_key`: NTA APIキー
-- `anthropic_api_key`: Anthropic APIキー
-- `spreadsheet_id`: **このアカウント専用の** Google スプレッドシートID
+**Mac の場合：**
+`Command（⌘）+ スペース` → 「ターミナル」と入力 → Enter
 
-## 4. keyword_data.py を作成（このPCのKW）
+**Windows の場合：**
+スタートメニュー →「PowerShell」と検索 → 開く
 
-```
-cp utils/keyword_data.example.py utils/keyword_data.py
-```
+---
 
-`utils/keyword_data.py` を開いて、このアカウントで検索したいキーワードを設定する。
+## ステップ3：セットアップコマンドを実行
 
-## 5. credentials.json を配置
-
-Google Sheets APIの認証ファイルをプロジェクトルートに置く。
-
-## 6. 起動
+**Mac の場合：** 以下をターミナルにコピペしてEnter
 
 ```
+curl -fsSL https://raw.githubusercontent.com/ando-y-design/ad-scraper/main/setup_mac_auto.sh | bash
+```
+
+**Windows の場合：** 以下をPowerShellにコピペしてEnter
+
+```
+git clone https://github.com/ando-y-design/ad-scraper.git %USERPROFILE%\ad_scraper && cd %USERPROFILE%\ad_scraper && setup_admin.bat
+```
+
+---
+
+## ステップ4：credentials.json を受け取る
+
+村上からもらった `credentials.json` ファイルを以下の場所に置く：
+
+- **Mac：** `/Users/あなたのユーザー名/ad_scraper/credentials.json`
+- **Windows：** `C:\Users\あなたのユーザー名\ad_scraper\credentials.json`
+
+> ファイルを ad_scraper フォルダの中に入れるだけでOK
+
+---
+
+## ステップ5：起動
+
+**Mac：**
+```
+cd ~/ad_scraper && python3 main.py
+```
+
+**Windows：**
+```
+cd %USERPROFILE%\ad_scraper
 python main.py
 ```
 
 ---
 
-## 改良を取り込む（毎日の運用）
+## 最新版に更新する方法
 
+改良があったときは以下のコマンドだけでOK：
+
+**Mac：**
 ```
+cd ~/ad_scraper && git pull
+```
+
+**Windows：**
+```
+cd %USERPROFILE%\ad_scraper
 git pull
 ```
 
-これだけ。`keyword_data.py` と `config.json` はローカルのまま保持される。
+---
+
+## うまくいかないときは
+
+村上に連絡してください。

@@ -1,3 +1,4 @@
+from __future__ import annotations
 """
 競合他社検索モジュール。
 Claude AIを使って同業種・同エリアの競合他社名を取得する。

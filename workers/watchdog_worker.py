@@ -1,3 +1,4 @@
+from __future__ import annotations
 """Watchdog ワーカー: スレッド監視・自己修復・設定再読み込み"""
 import json
 import logging

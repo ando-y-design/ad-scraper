@@ -1,3 +1,4 @@
+from __future__ import annotations
 import logging
 import threading
 import time
@@ -12,7 +13,7 @@ SCOPES = [
 ]
 
 HEADERS = [
-    'リスト持主', 'CRM', 'キーワード', '広告ソース', '取得日時', 'ランク',
+    '法人番号', 'CRM', 'キーワード', '広告ソース', '取得日時', 'ランク',
     '会社名', 'LP URL', '電話番号',
     '担当名', '話した内容', '前回', '架電結果', '次回',
 ]
@@ -25,7 +26,7 @@ def get_sheets_client(credentials_path: str):
 
 def get_worksheet(client, sheet_id: str):
     spreadsheet = client.open_by_key(sheet_id)
-    return spreadsheet.sheet1
+    return spreadsheet.worksheet('リスト')
 
 
 def setup_sheet(spreadsheet, worksheet):
@@ -34,7 +35,7 @@ def setup_sheet(spreadsheet, worksheet):
     worksheet.update('A1:N1', [HEADERS])
 
     col_widths = [
-        (0,  1,  80),   # A: リスト持主
+        (0,  1, 130),   # A: 法人番号
         (1,  2,  50),   # B: CRM
         (2,  3, 160),   # C: キーワード
         (3,  4, 100),   # D: 広告ソース
@@ -43,7 +44,7 @@ def setup_sheet(spreadsheet, worksheet):
         (6,  7, 180),   # G: 会社名
         (7,  8, 280),   # H: LP URL
         (8,  9, 130),   # I: 電話番号
-        (9,  10, 80),   # J: 担当名
+        (9,  10,  80),  # J: 担当名
         (10, 11, 160),  # K: 話した内容
         (11, 12, 100),  # L: 前回
         (12, 13, 100),  # M: 架電結果
@@ -113,18 +114,14 @@ class SheetsWriter:
         return max(len(values) + 1, 2)
 
     def sync_headers(self):
-        """ヘッダー行が HEADERS と一致しない場合のみ更新する。
-        旧8列フォーマット（D-G列あり）が検出された場合はその列を削除してから更新する。
-        """
+        """ヘッダー行が HEADERS と一致しない場合は警告のみ（自動書き換えしない）。"""
         try:
             current = self.worksheet.row_values(1)
             if current == HEADERS:
                 return
-
-            self.worksheet.update('A1:N1', [HEADERS])
-            logging.info(f'[Writer] ヘッダー行を更新: {current} → {HEADERS}')
+            logging.warning(f'[Writer] ヘッダー不一致（変更しません）: {current}')
         except Exception as e:
-            logging.warning(f'[Writer] ヘッダー同期失敗: {e}')
+            logging.warning(f'[Writer] ヘッダー確認失敗: {e}')
 
     def add(self, data: dict) -> list[tuple[str, int]] | None:
         """
@@ -132,7 +129,7 @@ class SheetsWriter:
         [(normalized_name, sheet_row), ...] を返す。それ以外はNone。
         """
         row = [
-            '',                                  # リスト持主（手動）
+            data.get('corporate_number') or '',  # 法人番号
             '',                                  # CRM（手動）
             data.get('keyword') or '',           # キーワード
             data.get('ad_sources') or '',        # 広告ソース

@@ -1,3 +1,4 @@
+from __future__ import annotations
 # -*- coding: utf-8 -*-
 """Fix _COMPANY_LABEL_PATTERNS to add new labels."""
 import sys
