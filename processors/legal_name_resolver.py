@@ -12,6 +12,7 @@ API 登録（無料・即時）:
 """
 import logging
 import re
+import unicodedata
 import xml.etree.ElementTree as ET
 
 import requests
@@ -35,6 +36,20 @@ _EN_LEGAL_SUFFIX_RE = re.compile(
 )
 
 _NTA_API_URL = 'https://api.houjin-bangou.nta.go.jp/4/name'
+
+
+def _to_fullwidth(text: str) -> str:
+    """半角英数字・記号を全角に変換する（NTA APIは全角のみ受け付ける）。"""
+    result = []
+    for ch in text:
+        cp = ord(ch)
+        if 0x21 <= cp <= 0x7E:   # ! ～ ~ の半角ASCII
+            result.append(chr(cp + 0xFEE0))
+        elif ch == ' ':
+            result.append('　')  # 半角スペース → 全角スペース
+        else:
+            result.append(ch)
+    return ''.join(result)
 
 _HEADERS = {
     'User-Agent': 'Mozilla/5.0 (compatible; AdScraper/1.0)',
@@ -141,7 +156,7 @@ def lookup_corporate_number(name: str, api_key: str) -> str | None:
         _corp_num_cache[name] = None
         return None
 
-    _, corp_number = _query_nta(core, api_key)
+    _, corp_number = _query_nta(core, api_key, original_name=name)
     _corp_num_cache[name] = corp_number
 
     if corp_number:
@@ -154,18 +169,18 @@ def lookup_corporate_number(name: str, api_key: str) -> str | None:
 
 # ── 内部処理 ─────────────────────────────────────────────────────────────────
 
-def _query_nta(core_name: str, api_key: str) -> tuple[str | None, str | None]:
+def _query_nta(core_name: str, api_key: str, original_name: str = '') -> tuple[str | None, str | None]:
     """NTA API にリクエストして (最適法人名, 法人番号) を返す。"""
     try:
         resp = requests.get(
             _NTA_API_URL,
             params={
                 'id': api_key,
-                'name': core_name,
+                'name': _to_fullwidth(core_name),  # 半角→全角変換（NTA API要件）
                 'type': '12',   # XML形式
             },
             headers=_HEADERS,
-            timeout=10,
+            timeout=20,
         )
 
         if resp.status_code == 400:
@@ -201,7 +216,7 @@ def _query_nta(core_name: str, api_key: str) -> tuple[str | None, str | None]:
 
         # 複数ヒット: コア名との文字一致スコアで最良候補を選ぶ
         names = [c[0] for c in candidates]
-        best_name = _best_match(core_name, names)
+        best_name = _best_match(core_name, names, original_name=original_name)
         best_idx = names.index(best_name)
         return candidates[best_idx]
 
@@ -216,17 +231,38 @@ def _query_nta(core_name: str, api_key: str) -> tuple[str | None, str | None]:
         return None, None
 
 
-def _best_match(core_name: str, candidates: list[str]) -> str:
+def _normalize_for_match(s: str) -> str:
+    """全角→半角正規化 + 小文字化（マッチング用）。"""
+    return unicodedata.normalize('NFKC', s).lower()
+
+
+def _best_match(core_name: str, candidates: list[str], original_name: str = '') -> str:
     """
-    コア名（英語サフィックス除去後）と最も一致するNTA候補を選ぶ。
-    スコア = (コア名の文字が候補コア名に含まれる数, −長さ差)
+    コア名と最も一致するNTA候補を選ぶ。
+    優先順: 完全一致 > 元名と同じ法人格 > 文字一致数 > 長さ差
+    全角・半角を正規化してから比較する。
     """
-    core_lower = core_name.lower()
+    core_lower = _normalize_for_match(core_name)
+
+    # 元の名前に含まれる法人格種別（株式会社・有限会社 等）を抽出
+    original_kind = ''
+    for kind in ('株式会社', '有限会社', '合同会社', '合資会社', '合名会社',
+                 '一般社団法人', '公益社団法人', '医療法人', '税理士法人'):
+        if kind in original_name:
+            original_kind = kind
+            break
+
+    core_nfkc = unicodedata.normalize('NFKC', core_name)  # lowercase前の正規化
 
     def score(c: str) -> tuple:
-        c_core = _JP_LEGAL_RE.sub('', c).strip().lower()
+        c_core_raw = _JP_LEGAL_RE.sub('', c).strip()
+        c_core_nfkc = unicodedata.normalize('NFKC', c_core_raw)
+        c_core = c_core_nfkc.lower()
+        exact_strict = 1 if c_core_nfkc == core_nfkc else 0   # 大小文字区別あり
+        exact_loose  = 1 if c_core == core_lower else 0         # 大小文字区別なし
+        same_kind    = 1 if (original_kind and original_kind in c) else 0
         common = sum(1 for ch in core_lower if ch in c_core)
-        length_diff = -abs(len(c_core) - len(core_lower))
-        return (common, length_diff)
+        length_diff  = -abs(len(c_core) - len(core_lower))
+        return (exact_strict, exact_loose, same_kind, common, length_diff)
 
     return max(candidates, key=score)
