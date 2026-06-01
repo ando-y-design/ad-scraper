@@ -3,6 +3,7 @@ from __future__ import annotations
 import logging
 import queue
 
+from processors.rank_calculator import calc_rank
 from storage.database import (
     get_connection, get_unexported, insert_company, mark_exported,
 )
@@ -75,6 +76,7 @@ def writer_worker():
                     'ad_sources': db_row['ad_sources'] or '',
                     'keyword': db_row['keyword'] or '',
                     'found_date': db_row['found_date'],
+                    'rank': db_row['rank'] if 'rank' in db_row.keys() else '',
                     'contact_name': db_row['contact_name'] if 'contact_name' in db_row.keys() else None,
                     'lp_headline': db_row['lp_headline'] if 'lp_headline' in db_row.keys() else None,
                     'all_keywords': db_row['all_keywords'] if 'all_keywords' in db_row.keys() else None,
