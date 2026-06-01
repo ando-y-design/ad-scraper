@@ -1,3 +1,4 @@
+from __future__ import annotations
 """
 自己修復モジュール: 問題を検知したらClaude CLIを呼び出してコードを修正する
 """

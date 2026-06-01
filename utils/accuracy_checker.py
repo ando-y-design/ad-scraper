@@ -1,3 +1,4 @@
+from __future__ import annotations
 """
 整合率チェッカー v2
 

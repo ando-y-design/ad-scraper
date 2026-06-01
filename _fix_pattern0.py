@@ -1,3 +1,4 @@
+from __future__ import annotations
 # -*- coding: utf-8 -*-
 """Fix Pattern 0 of _COMPANY_LABEL_PATTERNS - add missing labels."""
 path = r'C:\Users\amdwt\ad_scraper\processors\company_finder.py'

@@ -1,3 +1,4 @@
+from __future__ import annotations
 """
 DBゴミデータ自律クリーナー
 Watchdogから定期的に呼ばれ、不正な会社名・電話番号レコードを自動削除する。

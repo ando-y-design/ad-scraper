@@ -1,3 +1,4 @@
+from __future__ import annotations
 # -*- coding: utf-8 -*-
 """Add 取扱業者|取扱事業者|サービス提供元|サービス責任者 to _COMPANY_LABEL_PATTERNS."""
 path = r'C:\Users\amdwt\ad_scraper\processors\company_finder.py'

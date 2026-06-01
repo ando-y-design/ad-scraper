@@ -1,3 +1,4 @@
+from __future__ import annotations
 """
 国税庁法人番号公表データのローカルDBキャッシュ。
 NTA Web APIキーが未有効化の間も、ローカルで法人名照合できる。

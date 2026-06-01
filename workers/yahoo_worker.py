@@ -1,3 +1,4 @@
+from __future__ import annotations
 """Yahoo/Google 広告収集ワーカー"""
 import logging
 import queue
