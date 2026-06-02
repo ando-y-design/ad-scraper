@@ -57,7 +57,7 @@ def _xml_text(elem, tag: str, ns: str = _NS) -> str:
     return child.text.strip() if child is not None and child.text else ''
 
 
-def search_by_name(name: str, mode: int = 2) -> list[dict]:
+def search_by_name(name: str, mode: int = 2):
     """
     会社名で法人番号APIを検索する。
 
@@ -73,7 +73,8 @@ def search_by_name(name: str, mode: int = 2) -> list[dict]:
             'kind': str,              # 法人種別
             'close_date': str,        # 閉鎖日（空=現存）
         }
-        取得失敗・APIキー未設定・ヒットなしの場合は []
+        APIキー未設定・ヒットなしの場合は []
+        通信エラー・400エラーなど一時的な失敗の場合は None
     """
     global _last_request_time, _api_disabled
 
@@ -144,12 +145,13 @@ def search_by_name(name: str, mode: int = 2) -> list[dict]:
                 '[NTA] APIが404。キーが未有効化の可能性あり — セッション中のNTA呼び出しを停止します。'
                 ' 再有効化: https://www.houjin-bangou.nta.go.jp/webapi/'
             )
+            return None
         else:
             logging.warning(f'[NTA] HTTPエラー: {e.code}')
-        return []
+            return None  # 一時的なエラー → None（ヒットなしと区別）
     except Exception as e:
         logging.debug(f'[NTA] 検索失敗 "{name}": {e}')
-        return []
+        return None  # 通信エラー等 → None
 
 
 def verify_and_normalize(raw_name: str) -> dict:
@@ -182,12 +184,14 @@ def verify_and_normalize(raw_name: str) -> dict:
 
     hits = search_by_name(search_name, mode=2)
 
-    if not hits:
-        # Web API失敗 or ヒットなし → ローカルDBにフォールバック
+    if hits is None:
+        # 通信エラー・一時的な失敗 → ローカルDBにフォールバック（書き込みはブロックしない）
         try:
             from utils.nta_local_db import verify_local, is_db_ready
             if is_db_ready():
-                return verify_local(raw_name)
+                result = verify_local(raw_name)
+                result['nta_error'] = True
+                return result
         except Exception:
             pass
         return {
@@ -196,6 +200,26 @@ def verify_and_normalize(raw_name: str) -> dict:
             'corporate_number': '',
             'address': '',
             'confidence': 'none',
+            'nta_error': True,  # 通信エラーなので弾かない
+        }
+
+    if not hits:
+        # ヒットなし（APIは正常応答） → ローカルDBにフォールバック
+        try:
+            from utils.nta_local_db import verify_local, is_db_ready
+            if is_db_ready():
+                result = verify_local(raw_name)
+                result['nta_error'] = False
+                return result
+        except Exception:
+            pass
+        return {
+            'verified': False,
+            'official_name': raw_name,
+            'corporate_number': '',
+            'address': '',
+            'confidence': 'none',
+            'nta_error': False,  # 正常にヒットなし → ゴミ名の可能性
         }
 
     _LEGAL_STRIP = re.compile(
@@ -218,10 +242,10 @@ def verify_and_normalize(raw_name: str) -> dict:
                 'corporate_number': h['corporate_number'],
                 'address': h['address'],
                 'confidence': 'exact',
+                'nta_error': False,
             }
 
     # 部分一致: NTA結果のコア名 == 検索コア名 の場合のみ許可
-    # （「コープ東北」→「コープ東北グリーンエネルギー株式会社」のような誤変換を防ぐ）
     for h in hits:
         h_core = _core(h['name'])
         if h_core == search_core:
@@ -231,6 +255,7 @@ def verify_and_normalize(raw_name: str) -> dict:
                 'corporate_number': h['corporate_number'],
                 'address': h['address'],
                 'confidence': 'partial',
+                'nta_error': False,
             }
 
     return {
@@ -239,6 +264,7 @@ def verify_and_normalize(raw_name: str) -> dict:
         'corporate_number': '',
         'address': '',
         'confidence': 'none',
+        'nta_error': False,  # APIは正常応答したがマッチなし
     }
 
 

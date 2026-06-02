@@ -1,4 +1,5 @@
 from __future__ import annotations
+from typing import Optional
 """情報取得・解析ワーカー（並列処理）"""
 import concurrent.futures
 import logging
@@ -69,7 +70,7 @@ def is_blocked_domain(domain: str) -> bool:
 _PROCESSOR_WORKERS = 1  # LP取得を逐次処理（PC負荷軽減）
 
 
-def _process_one_lp(item: dict, conn=None) -> dict | None:
+def _process_one_lp(item: dict, conn=None) -> Optional[dict]:
     """1件のLPを処理して結果dictを返す。失敗時はNone。
     conn は使用しない（後方互換のため残す）。
     ThreadPoolExecutor から呼ばれるため、スレッドローカル接続を使う。
@@ -120,14 +121,22 @@ def _process_one_lp(item: dict, conn=None) -> dict | None:
     serp_phone = item.get('serp_phone')
 
     nta_key = config.get('nta_api_key', '')
-    company_name, phone, phones_str, contact_name, lp_headline = find_company_info(lp_url, meta_company, nta_api_key=nta_key)
+    company_name, phone, phones_str, contact_name, lp_headline, ad_signals = find_company_info(lp_url, meta_company, nta_api_key=nta_key)
     beat('processor')
 
-    # 法人番号を取得（NTA APIキー設定済みの場合のみ）
+    # 法人番号と正式法人名を取得（NTA APIキー設定済みの場合のみ）
     corporate_number = ''
+    nta_errored = False
     if company_name and nta_key:
         from processors.legal_name_resolver import lookup_corporate_number
-        corporate_number = lookup_corporate_number(company_name, nta_key) or ''
+        corp_num, official_name = lookup_corporate_number(company_name, nta_key)
+        if corp_num == '__NTA_ERROR__':
+            nta_errored = True
+        else:
+            corporate_number = corp_num or ''
+            if official_name and official_name != company_name:
+                logging.info(f'[Processor] NTA正式名に補正: "{company_name}" → "{official_name}"')
+                company_name = official_name
 
     # SERP コール表示の電話番号をフォールバックとして使用
     if not phone and serp_phone:
@@ -179,6 +188,7 @@ def _process_one_lp(item: dict, conn=None) -> dict | None:
         'competitors': competitors_str,
         'industry': classify_industry(keyword),
         'corporate_number': corporate_number,
+        'nta_errored': nta_errored,
     }
 
 

@@ -1,4 +1,5 @@
 from __future__ import annotations
+from typing import Optional
 import logging
 import threading
 import time
@@ -98,7 +99,7 @@ def setup_sheet(spreadsheet, worksheet):
 
 class SheetsWriter:
     def __init__(self, worksheet, batch_size: int = 50, batch_timeout: int = 300,
-                 shutdown_event: threading.Event | None = None,
+                 shutdown_event: threading.Optional[Event] = None,
                  heartbeat_callback=None):
         self.worksheet = worksheet
         self.batch_size = batch_size
@@ -110,8 +111,18 @@ class SheetsWriter:
         self._next_row = self._get_next_row()
 
     def _get_next_row(self) -> int:
-        values = self.worksheet.get_all_values()
-        return max(len(values) + 1, 2)
+        # get_all_valuesは空行も含む行数を返すためappend位置と合わない。
+        # 実際のデータ末尾行をfindで取得する。
+        try:
+            col_a = self.worksheet.col_values(1)
+            # ヘッダーを含む実データ行数 → 次行
+            filled = max((i for i, v in enumerate(col_a, 1) if v.strip()), default=1)
+            # A列以外にもデータがある可能性のため全列の最大行も確認
+            col_g = self.worksheet.col_values(7)
+            filled_g = max((i for i, v in enumerate(col_g, 1) if v.strip()), default=1)
+            return max(filled, filled_g) + 1
+        except Exception:
+            return 2
 
     def sync_headers(self):
         """ヘッダー行が HEADERS と一致しない場合は警告のみ（自動書き換えしない）。"""
@@ -123,7 +134,7 @@ class SheetsWriter:
         except Exception as e:
             logging.warning(f'[Writer] ヘッダー確認失敗: {e}')
 
-    def add(self, data: dict) -> list[tuple[str, int]] | None:
+    def add(self, data: dict) -> Optional[list[tuple[str, int]]]:
         """
         データを追加する。フラッシュが実行された場合は
         [(normalized_name, sheet_row), ...] を返す。それ以外はNone。
@@ -150,7 +161,7 @@ class SheetsWriter:
             return self.flush()
         return None
 
-    def flush(self) -> list[tuple[str, int]] | None:
+    def flush(self) -> Optional[list[tuple[str, int]]]:
         """
         バッチをSheetsに書き込む。
         成功時は [(normalized_name, sheet_row), ...] を返す。
@@ -193,7 +204,7 @@ class SheetsWriter:
             pass
         return None
 
-    def flush_if_timeout(self) -> list[tuple[str, int]] | None:
+    def flush_if_timeout(self) -> Optional[list[tuple[str, int]]]:
         elapsed = (datetime.now() - self._last_flush).total_seconds()
         if elapsed >= self.batch_timeout and self._batch:
             return self.flush()
