@@ -198,11 +198,7 @@ def _process_one_lp(item: dict, conn=None) -> dict | None:
     competitors_str = ' / '.join(competitors) if competitors else ''
 
     from processors.rank_calculator import calc_rank
-    rank = calc_rank(
-        keyword=keyword,
-        lp_url=lp_url,
-        ad_signals=ad_signals,
-    )
+    rank = calc_rank(1, source)
 
     return {
         'company_name': company_name.strip(),
