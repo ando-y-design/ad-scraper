@@ -1,4 +1,5 @@
 from __future__ import annotations
+from typing import Optional
 import re
 import unicodedata
 
@@ -7,8 +8,9 @@ from processors.normalizer import normalize_phone, is_valid_phone
 # 電話番号らしき文字列を広めに取り、後で検証する
 # 全角括弧（）・全角スラッシュ／・半角スラッシュ/も許容
 # 例: （03）1234-5678 / 0120／000／000
+# 先頭0の直後に数字が続くことを要求し、長い連番への誤マッチを防ぐ
 _RAW_PHONE_PATTERN = re.compile(
-    r'0[\d\s\-\(\)（）\.ー－・／/]{8,16}'
+    r'0\d[\d\s\-\(\)（）\.ー－・／/]{7,15}'
 )
 
 _PRIORITY_PREFIXES = [
@@ -111,7 +113,7 @@ def extract_all_phones(text: str) -> list[str]:
     return result
 
 
-def extract_phone(text: str) -> str | None:
+def extract_phone(text: str) -> Optional[str]:
     if not text:
         return None
 

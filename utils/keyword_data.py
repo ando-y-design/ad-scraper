@@ -249,8 +249,65 @@ def _build_flat(groups: dict, source: str, assigned: list[str]) -> list[str]:
     return result
 
 
+# Meta用修飾語バリエーション自動展開
+# ベースKWに修飾語を掛け合わせてパターンを増やす
+_META_BASE_KEYWORDS = [
+    # 医療・美容クリニック
+    "医療脱毛", "AGA治療", "二重整形", "ヒアルロン酸", "シミ取り", "脂肪溶解",
+    "ED治療", "ダーマペン", "ピコレーザー", "美容クリニック", "美容外科",
+    # 整骨院・整体
+    "整体", "骨盤矯正", "産後骨盤矯正", "腰痛治療", "肩こり治療", "鍼灸",
+    # 美容サロン
+    "ネイルサロン", "まつ毛エクステ", "美容室", "脱毛サロン", "フェイシャルエステ",
+    "痩身エステ", "眉毛サロン", "パーソナルカラー", "メンズ脱毛",
+    # 建設・リフォーム
+    "外壁塗装", "屋根塗装", "太陽光発電", "蓄電池", "リフォーム", "給湯器交換",
+    "ハウスクリーニング", "害虫駆除", "雨漏り修理",
+    # 不動産
+    "不動産売却", "マンション売却", "不動産投資", "アパート経営", "空き家売却",
+    # 士業
+    "税理士", "弁護士相談", "過払い金", "残業代請求", "相続相談",
+    # 金融
+    "ビジネスローン", "ファクタリング", "補助金申請", "節税対策",
+    # 婚活・葬儀
+    "結婚相談所", "婚活", "家族葬", "ペット火葬",
+    # 教育
+    "プログラミング教室", "英会話スクール", "学習塾", "ヨガ教室", "料理教室",
+    # フィットネス
+    "パーソナルジム", "ダイエットジム", "ゴルフスクール",
+    # 採用
+    "看護師求人", "介護求人", "保育士求人",
+]
+
+_META_MODIFIERS = [
+    "初回無料", "初回体験", "無料相談", "無料体験", "無料診断", "無料見積",
+    "キャンペーン", "モニター募集", "期間限定", "割引", "安い", "おすすめ",
+    "口コミ", "評判", "比較", "ランキング", "費用", "料金",
+]
+
+
+def _expand_meta_keywords(bases: list[str], modifiers: list[str]) -> list[str]:
+    result = []
+    for base in bases:
+        for mod in modifiers:
+            result.append(f'{base} {mod}')
+    return result
+
+
+def _build_flat(groups: dict, source: str, assigned: list[str]) -> list[str]:
+    result = []
+    for industry, data in groups.items():
+        if assigned and industry not in assigned:
+            continue
+        result.extend(data.get(source, []))
+    return result
+
+
 GOOGLE_YAHOO_KEYWORDS = _build_flat(KEYWORD_GROUPS, "google_yahoo", [])
-META_KEYWORDS = _build_flat(KEYWORD_GROUPS, "meta", [])
+_meta_base = _build_flat(KEYWORD_GROUPS, "meta", [])
+META_KEYWORDS = list(dict.fromkeys(
+    _meta_base + _expand_meta_keywords(_META_BASE_KEYWORDS, _META_MODIFIERS)
+))
 RESERVE_GOOGLE_YAHOO_KEYWORDS = []
 
 # Meta用リザーブ（Tier2→Tier3の順で補充）
