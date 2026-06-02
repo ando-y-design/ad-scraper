@@ -550,8 +550,8 @@ def _normalize_name(name: str) -> str:
         r'お問い合わせ|問い合わせ)\s*$',
         '', name
     ).strip()
-    # 末尾のハイフン・アンダースコア・スラッシュを除去（日本語ダッシュ類も含む）
-    name = re.sub(r'[\-‐–—－_/\\|｜・]+$', '', name).strip()
+    # 末尾のハイフン・アンダースコア・スラッシュ・孤立括弧を除去
+    name = re.sub(r'[\-‐–—－_/\\|｜・）)]+$', '', name).strip()
     # 末尾の日本語文字に続く孤立ピリオドを除去
     # 例: "株式会社タキオン." → "株式会社タキオン"（英字末尾 "U.S.J." は保持）
     name = re.sub(r'(?<=[ぁ-んァ-ン一-鿿])\.\s*$', '', name).strip()
@@ -2246,10 +2246,12 @@ _PAGE_SUFFIX_RE = re.compile(
     r'(?:\s+|[\-‐–—－]\s*)(?:'
     r'採用サイト|採用情報|採用ページ|採用|求人情報|求人|'
     r'公式サイト|公式ページ|公式HP|公式|ホームページ|'
-    r'会社概要|会社情報|企業情報|企業概要|会社案内|'
+    r'コーポレートサイト|コーポレートページ|コーポレート|'
+    r'オフィシャルサイト|オフィシャル|'
+    r'会社概要|会社情報|企業情報|企業概要|会社案内|グループ会社|'
     r'お問い合わせ|問い合わせ|'
     r'本社所在地|事業所所在地|所在地|'
-    r'アクセス|MAP|地図'
+    r'アクセス|MAP|地図|サービスサイト|ブランドサイト'
     r')\s*$'
 )
 
@@ -2301,13 +2303,26 @@ def _sanitize_company_final(name: str) -> str | None:
                 if _is_service_prefix:
                     name = _last
 
-    # STEP 5: 最終ノーマライズ（上記変更後に再適用）
+    # STEP 5: 「サービス名in法人名」パターンから法人名を抽出
+    # 例: "エクステンションプリーズinこちらは全保険株式会社" → "全保険株式会社"
+    _m_in = re.search(r'\bin\b(.+)', name, re.IGNORECASE)
+    if _m_in:
+        after_in = _m_in.group(1).strip()
+        after_in = re.sub(r'^(?:こちらは|当社|弊社|私達は|私たちは)\s*', '', after_in).strip()
+        if _LEGAL_ENTITY_RE.search(after_in) and len(after_in) >= 4:
+            name = after_in
+
+    # STEP 6: 最終ノーマライズ（上記変更後に再適用）
     name = _normalize_name(name)
     if not name:
         return None
 
-    # STEP 6: 残存ページ種別があれば拒否
+    # STEP 7: 残存ページ種別があれば拒否
     if _PAGE_SUFFIX_RE.search(name):
+        return None
+
+    # STEP 8: 明らかにページタイトルのゴミを拒否（法人格を含まない長い文字列）
+    if len(name) > 25 and not _LEGAL_ENTITY_RE.search(name):
         return None
 
     return name.strip() or None

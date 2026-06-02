@@ -1,4 +1,5 @@
 from __future__ import annotations
+from typing import Optional
 """SQLite + Sheets 書き込みワーカー"""
 import logging
 import queue
@@ -40,7 +41,7 @@ def writer_worker():
     sheet_id = sheets_cfg.get('sheet_id', '')
     creds_path = str(BASE_DIR / sheets_cfg.get('service_account_key_path', 'credentials.json'))
 
-    writer: SheetsWriter | None = None
+    writer: Optional[SheetsWriter] = None
     try:
         client = get_sheets_client(creds_path)
         ws = get_worksheet(client, sheet_id)
@@ -59,19 +60,21 @@ def writer_worker():
         if unexported:
             logging.info(f'[Writer] 未送信データ {len(unexported)}件を再送します')
             for db_row in unexported:
+                keys = db_row.keys()
                 flush_results = writer.add({
                     'company_name': db_row['company_name'],
                     'normalized_name': db_row['normalized_name'],
                     'lp_url': db_row['lp_url'] or '',
                     'phone': db_row['phone'] or '',
-                    'phones': db_row['phones'] if 'phones' in db_row.keys() else None,
+                    'phones': db_row['phones'] if 'phones' in keys else None,
                     'ad_sources': db_row['ad_sources'] or '',
                     'keyword': db_row['keyword'] or '',
                     'found_date': db_row['found_date'],
-                    'rank': db_row['rank'] if 'rank' in db_row.keys() else '',
-                    'contact_name': db_row['contact_name'] if 'contact_name' in db_row.keys() else None,
-                    'lp_headline': db_row['lp_headline'] if 'lp_headline' in db_row.keys() else None,
-                    'all_keywords': db_row['all_keywords'] if 'all_keywords' in db_row.keys() else None,
+                    'rank': db_row['rank'] if 'rank' in keys else '',
+                    'corporate_number': db_row['corporate_number'] if 'corporate_number' in keys else '',
+                    'contact_name': db_row['contact_name'] if 'contact_name' in keys else None,
+                    'lp_headline': db_row['lp_headline'] if 'lp_headline' in keys else None,
+                    'all_keywords': db_row['all_keywords'] if 'all_keywords' in keys else None,
                     'competitors': '',
                 })
                 if flush_results:
@@ -97,6 +100,11 @@ def writer_worker():
         try:
             inserted = insert_company(conn, data)
             if not inserted:
+                continue
+
+            # NTA正常応答でヒットなし → ゴミ名の可能性が高いのでスキップ
+            if not data.get('corporate_number') and not data.get('nta_errored'):
+                logging.info(f'[Writer] NTA未マッチのためスキップ: {data.get("company_name")}')
                 continue
 
             data['rank'] = calc_rank(1, data.get('ad_sources', ''))

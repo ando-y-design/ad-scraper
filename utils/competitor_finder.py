@@ -53,7 +53,7 @@ def find_competitors_ai(
         return _cache[ck][:limit]
 
     api_key = _get_api_key()
-    if not api_key:
+    if not api_key or api_key == 'YOUR_ANTHROPIC_API_KEY':
         _cache[ck] = []
         return []
 
