@@ -1,4 +1,5 @@
 from __future__ import annotations
+from typing import Optional
 """
 英語法人格サフィックス（Inc./Corp./Ltd. 等）を含む会社名を
 国税庁法人番号公表サイト WebAPI で正式な日本語法人登録名に解決する。
@@ -58,10 +59,10 @@ _HEADERS = {
 
 # プロセス内メモリキャッシュ（同一名の重複 API 呼び出しを防ぐ）
 # (resolved_name, corporate_number) のタプルを保持
-_cache: dict[str, tuple[str | None, str | None]] = {}
+_cache: dict[str, tuple[Optional[str], Optional[str]]] = {}
 
 # 法人番号専用キャッシュ（日本語名 → 法人番号）
-_corp_num_cache: dict[str, str | None] = {}
+_corp_num_cache: dict[str, Optional[str]] = {}
 
 # API キー未設定の警告を 1 回だけ出す
 _warned_no_key = False
@@ -129,42 +130,49 @@ def resolve_legal_name(name: str, api_key: str) -> str | None:
     return resolved_name
 
 
-def lookup_corporate_number(name: str, api_key: str) -> str | None:
+def lookup_corporate_number(name: str, api_key: str) -> tuple[Optional[str], Optional[str]]:
     """
-    会社名から国税庁 WebAPI 経由で法人番号（13桁）を取得して返す。
-    API キーが未設定・ヒットなしの場合は None を返す。
+    会社名から国税庁 WebAPI 経由で (法人番号, 正式法人名) を返す。
+    マッチしない場合は (None, None)、一時エラーは ('__NTA_ERROR__', None)。
 
     日本語法人名・英語サフィックス名どちらにも対応。
     結果はプロセス内でキャッシュされる。
     """
     if not api_key or not name:
-        return None
+        return None, None
 
     if name in _corp_num_cache:
-        return _corp_num_cache[name]
+        cached = _corp_num_cache[name]
+        # 旧キャッシュ（文字列）との互換
+        if isinstance(cached, tuple):
+            return cached
+        return cached, None
 
     # resolve_legal_name キャッシュに法人番号がある場合はそちらを使う
     if name in _cache:
-        corp_number = _cache[name][1]
-        _corp_num_cache[name] = corp_number
-        return corp_number
+        official_name, corp_number = _cache[name]
+        _corp_num_cache[name] = (corp_number, official_name)
+        return corp_number, official_name
 
     # 法人格サフィックス（日英）を除去してコア名を作成
     core = _JP_LEGAL_RE.sub('', name).strip()
     core = _EN_LEGAL_SUFFIX_RE.sub('', core).strip()
     if not core:
-        _corp_num_cache[name] = None
-        return None
+        _corp_num_cache[name] = (None, None)
+        return None, None
 
-    _, corp_number = _query_nta(core, api_key, original_name=name)
-    _corp_num_cache[name] = corp_number
+    resolved_name, corp_number = _query_nta(core, api_key, original_name=name)
+    if resolved_name == '__NTA_ERROR__':
+        return '__NTA_ERROR__', None
+
+    _corp_num_cache[name] = (corp_number, resolved_name)
 
     if corp_number:
-        logging.info(f'[NTA] 法人番号取得: "{name}" → {corp_number}')
+        logging.info(f'[NTA] 法人番号取得: "{name}" → {corp_number} / 正式名: "{resolved_name}"')
     else:
         logging.debug(f'[NTA] 法人番号未取得: "{name}"')
 
-    return corp_number
+    return corp_number, resolved_name
 
 
 # ── 内部処理 ─────────────────────────────────────────────────────────────────
@@ -184,13 +192,13 @@ def _query_nta(core_name: str, api_key: str, original_name: str = '') -> tuple[s
         )
 
         if resp.status_code == 400:
-            logging.warning(f'[NTA] API bad request (キー不正？): "{core_name}"')
-            return None, None
+            logging.warning(f'[NTA] HTTPエラー: {resp.status_code}')
+            return '__NTA_ERROR__', None  # 一時エラー（ヒットなしと区別）
         if resp.status_code == 404:
             return None, None
         if resp.status_code != 200:
             logging.warning(f'[NTA] HTTP {resp.status_code}: "{core_name}"')
-            return None, None
+            return '__NTA_ERROR__', None  # 一時エラー
 
         root = ET.fromstring(resp.content)
 
@@ -222,13 +230,13 @@ def _query_nta(core_name: str, api_key: str, original_name: str = '') -> tuple[s
 
     except ET.ParseError as e:
         logging.warning(f'[NTA] XML parse error "{core_name}": {e}')
-        return None, None
+        return '__NTA_ERROR__', None
     except requests.RequestException as e:
         logging.warning(f'[NTA] network error "{core_name}": {e}')
-        return None, None
+        return '__NTA_ERROR__', None
     except Exception as e:
         logging.warning(f'[NTA] unexpected error "{core_name}": {e}')
-        return None, None
+        return '__NTA_ERROR__', None
 
 
 def _normalize_for_match(s: str) -> str:

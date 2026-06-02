@@ -128,11 +128,19 @@ def _process_one_lp(item: dict, conn=None) -> dict | None:
         ad_signals = {}
     beat('processor')
 
-    # 法人番号を取得（NTA APIキー設定済みの場合のみ）
+    # 法人番号と正式法人名を取得（NTA APIキー設定済みの場合のみ）
     corporate_number = ''
+    nta_errored = False
     if company_name and nta_key:
         from processors.legal_name_resolver import lookup_corporate_number
-        corporate_number = lookup_corporate_number(company_name, nta_key) or ''
+        corp_num, official_name = lookup_corporate_number(company_name, nta_key)
+        if corp_num == '__NTA_ERROR__':
+            nta_errored = True
+        else:
+            corporate_number = corp_num or ''
+            if official_name and official_name != company_name:
+                logging.info(f'[Processor] NTA正式名に補正: "{company_name}" → "{official_name}"')
+                company_name = official_name
 
     # SERP コール表示の電話番号をフォールバックとして使用
     if not phone and serp_phone:
@@ -213,6 +221,7 @@ def _process_one_lp(item: dict, conn=None) -> dict | None:
         'industry': classify_industry(keyword),
         'rank': rank,
         'corporate_number': corporate_number,
+        'nta_errored': nta_errored,
     }
 
 

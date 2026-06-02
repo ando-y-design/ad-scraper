@@ -110,8 +110,14 @@ class SheetsWriter:
         self._next_row = self._get_next_row()
 
     def _get_next_row(self) -> int:
-        values = self.worksheet.get_all_values()
-        return max(len(values) + 1, 2)
+        try:
+            col_a = self.worksheet.col_values(1)
+            filled = max((i for i, v in enumerate(col_a, 1) if v.strip()), default=1)
+            col_g = self.worksheet.col_values(7)
+            filled_g = max((i for i, v in enumerate(col_g, 1) if v.strip()), default=1)
+            return max(filled, filled_g) + 1
+        except Exception:
+            return 2
 
     def sync_headers(self):
         """ヘッダー行が HEADERS と一致しない場合は警告のみ（自動書き換えしない）。"""
