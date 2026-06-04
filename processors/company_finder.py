@@ -2403,7 +2403,7 @@ def find_company_info(
                     company = _normalize_name(company)
                     if company and phone and not is_freephone(phone):
                         _record_phones([phone])
-                        return company.strip(), phone, ' / '.join(_extra_phones) or None, contact_name, lp_headline
+                        return company.strip(), phone, ' / '.join(_extra_phones) or None, contact_name, lp_headline, 'tokutei'
                     # フリーダイヤルのみ/電話なし → 日本語社名は保持したまま電話番号を探し続ける
                     if phone:
                         _record_phones([phone])
@@ -2445,7 +2445,7 @@ def find_company_info(
                         company = _normalize_name(company)
                         if company and phone and not is_freephone(phone):
                             _record_phones([phone])
-                            return company.strip(), phone, ' / '.join(_extra_phones) or None, contact_name, lp_headline
+                            return company.strip(), phone, ' / '.join(_extra_phones) or None, contact_name, lp_headline, 'lp_hp'
                     break
                 except Exception as e:
                     if retry == 0:
@@ -2790,12 +2790,4 @@ def find_company_info(
 
     phones_str = ' / '.join(_extra_phones) if _extra_phones else None
 
-    # 広告シグナル抽出（追加フェッチなし・既取得soupを使用）
-    try:
-        from processors.rank_calculator import extract_ad_signals
-        _soup_for_signals = lp_soup_for_links if 'lp_soup_for_links' in dir() else None
-        ad_signals = extract_ad_signals(lp_url, _soup_for_signals)
-    except Exception:
-        ad_signals = {}
-
-    return company, phone, phones_str, contact_name, lp_headline, ad_signals
+    return company, phone, phones_str, contact_name, lp_headline, 'lp'

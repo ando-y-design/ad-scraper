@@ -122,10 +122,10 @@ def _process_one_lp(item: dict, conn=None) -> dict | None:
     nta_key = config.get('nta_api_key', '')
     result = find_company_info(lp_url, meta_company, nta_api_key=nta_key)
     if len(result) == 6:
-        company_name, phone, phones_str, contact_name, lp_headline, ad_signals = result
+        company_name, phone, phones_str, contact_name, lp_headline, phone_source = result
     else:
         company_name, phone, phones_str, contact_name, lp_headline = result
-        ad_signals = {}
+        phone_source = ''
     beat('processor')
 
     # 法人番号と正式法人名を取得（NTA APIキー設定済みの場合のみ）
@@ -181,7 +181,8 @@ def _process_one_lp(item: dict, conn=None) -> dict | None:
                 old_rank_src = _count_sources(old_sources)
                 new_rank_src = _count_sources(new_sources['ad_sources'] or '')
                 if new_rank_src > old_rank_src:
-                    new_rank = calc_rank(new_sources['ad_sources'] or '', all_keywords=new_sources['all_keywords'] or '')
+                    seen = conn.execute('SELECT seen_count FROM companies WHERE normalized_name=?', (existing['normalized_name'],)).fetchone()
+                    new_rank = calc_rank(seen['seen_count'] if seen else 2, new_sources['ad_sources'] or '')
                     try:
                         result_queue.put({
                             '_type': 'rank_update',
@@ -207,6 +208,7 @@ def _process_one_lp(item: dict, conn=None) -> dict | None:
         'base_url': base_domain,
         'phone': phone,
         'phones': phones_str,
+        'phone_source': phone_source,
         'ad_sources': source,
         'keyword': keyword,
         'area_name': area_name,

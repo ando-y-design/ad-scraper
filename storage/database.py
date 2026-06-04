@@ -216,14 +216,15 @@ def insert_company(conn: sqlite3.Connection, data: dict) -> bool:
             '''
             INSERT OR IGNORE INTO companies
               (company_name, normalized_name, lp_url, base_url, phone, phones,
-               ad_sources, found_date, keyword, exported,
+               phone_source, ad_sources, found_date, keyword, exported,
                contact_name, lp_headline, all_keywords, area_name, corporate_number)
-            VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, 0, ?, ?, ?, ?, ?)
+            VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, 0, ?, ?, ?, ?, ?)
             ''',
             (
                 data['company_name'], data['normalized_name'],
                 data['lp_url'], data['base_url'], data['phone'],
                 data.get('phones'),
+                data.get('phone_source', ''),
                 data['ad_sources'],
                 data['found_date'], kw,
                 data.get('contact_name'),
