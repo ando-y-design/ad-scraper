@@ -115,6 +115,9 @@ _cache: dict[str, tuple[Optional[str], Optional[str]]] = {}
 # 法人番号専用キャッシュ（日本語名 → 法人番号）
 _corp_num_cache: dict[str, Optional[str]] = {}
 
+# 400エラーが返ったコア名はセッション内でスキップ（同一名の繰り返しリクエスト防止）
+_nta_400_skip: set[str] = set()
+
 # API キー未設定の警告を 1 回だけ出す
 _warned_no_key = False
 
@@ -214,6 +217,7 @@ def lookup_corporate_number(name: str, api_key: str) -> tuple[Optional[str], Opt
 
     resolved_name, corp_number = _query_nta(core, api_key, original_name=name)
     if resolved_name == '__NTA_ERROR__':
+        # __NTA_ERROR__はキャッシュせず返す（次回はスキップセットで無限ループ防止）
         return '__NTA_ERROR__', None
 
     # ── ゴミ除去リトライ ────────────────────────────────────────────────────
@@ -251,6 +255,10 @@ def lookup_corporate_number(name: str, api_key: str) -> tuple[Optional[str], Opt
 
 def _query_nta(core_name: str, api_key: str, original_name: str = '') -> tuple[str | None, str | None]:
     """NTA API にリクエストして (最適法人名, 法人番号) を返す。"""
+    if core_name in _nta_400_skip:
+        logging.debug(f'[NTA] 400スキップ: "{core_name}"')
+        return None, None
+
     try:
         resp = requests.get(
             _NTA_API_URL,
@@ -264,7 +272,8 @@ def _query_nta(core_name: str, api_key: str, original_name: str = '') -> tuple[s
         )
 
         if resp.status_code == 400:
-            logging.warning(f'[NTA] HTTPエラー: {resp.status_code}')
+            _nta_400_skip.add(core_name)
+            logging.warning(f'[NTA] 400エラー → セッション内スキップ登録: "{core_name}"')
             return '__NTA_ERROR__', None  # 一時エラー（ヒットなしと区別）
         if resp.status_code == 404:
             return None, None
