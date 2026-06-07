@@ -155,6 +155,22 @@ def writer_worker():
 
         except Exception as e:
             logging.error(f'[Writer] エラー: {e}', exc_info=True)
+            # 接続切れ・タイムアウト時はWriterを再接続
+            if writer and any(kw in str(e) for kw in ('Connection', 'Timeout', 'timeout', 'reset', 'aborted')):
+                logging.warning('[Writer] 接続エラー → Sheets再接続を試みます')
+                try:
+                    client = get_sheets_client(creds_path)
+                    ws = get_worksheet(client, sheet_id)
+                    writer = SheetsWriter(
+                        ws,
+                        batch_size=config.get('timing', {}).get('batch_size', 50),
+                        batch_timeout=config.get('timing', {}).get('batch_timeout_seconds', 300),
+                        shutdown_event=shutdown_event,
+                        heartbeat_callback=lambda: beat('writer'),
+                    )
+                    logging.info('[Writer] Sheets再接続成功')
+                except Exception as re_e:
+                    logging.error(f'[Writer] 再接続失敗: {re_e}')
         finally:
             result_queue.task_done()
 

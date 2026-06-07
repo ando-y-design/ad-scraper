@@ -1,8 +1,11 @@
 from __future__ import annotations
+import concurrent.futures
 import logging
 import threading
 import time
 from datetime import datetime
+
+_SHEETS_TIMEOUT = 60  # Sheets API 1回呼び出しの最大待機秒数
 
 
 def _half(s: str) -> str:
@@ -175,13 +178,30 @@ class SheetsWriter:
 
         for attempt in range(3):
             try:
-                self.worksheet.append_rows(rows, value_input_option='USER_ENTERED')
+                # タイムアウト付きで append_rows を実行（ハング防止）
+                with concurrent.futures.ThreadPoolExecutor(max_workers=1) as ex:
+                    fut = ex.submit(
+                        self.worksheet.append_rows, rows,
+                        value_input_option='USER_ENTERED'
+                    )
+                    try:
+                        fut.result(timeout=_SHEETS_TIMEOUT)
+                    except concurrent.futures.TimeoutError:
+                        raise TimeoutError(
+                            f'Sheets append_rows が{_SHEETS_TIMEOUT}秒でタイムアウト'
+                        )
                 self._next_row += len(rows)
                 self._batch.clear()
                 self._last_flush = datetime.now()
                 logging.info(f'Sheets書き込み: {len(rows)}件 (行{start_row}〜{start_row + len(rows) - 1})')
                 return [(name, start_row + i) for i, name in enumerate(names)]
 
+            except TimeoutError as e:
+                logging.warning(f'[Writer] Sheets タイムアウト (attempt {attempt+1}/3): {e}')
+                if attempt < 2:
+                    self._interruptible_sleep(10)
+                    continue
+                raise
             except gspread.exceptions.APIError as e:
                 if e.response.status_code == 429:
                     wait = 60 * (attempt + 1)
