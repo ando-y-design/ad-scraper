@@ -2661,43 +2661,14 @@ def find_company_info(
         except Exception as e:
             logging.debug(f'[Finder] 英語社名→日本語名変換エラー: {e}')
 
-    # ③.9 meta_companyが日本語法人名として有効な場合の早期採用
-    # LP解析で日本語法人名が取れなかった場合、またはLP上に言及がない別会社が取れた場合に適用
-    if meta_company:
+    # ③.9 meta_companyはLP抽出失敗時のみフォールバック採用
+    # LP解析で日本語法人名が取れた場合は常にLP優先（FBページ名による上書き禁止）
+    if meta_company and (not company or not _is_japanese_company(company)):
         try:
             clean_meta = _normalize_name(meta_company.strip())
             if clean_meta and _is_valid_company(clean_meta) and _is_japanese_company(clean_meta):
-                if not company or not _is_japanese_company(company):
-                    # LP解析で日本語法人名が取れなかった
-                    logging.debug(f'[Finder] meta_company早期採用: "{clean_meta}"')
-                    company = clean_meta
-                elif company != clean_meta and all_text:
-                    # LP解析で別の日本語法人名が取れた → LP上にmeta_companyの言及があるか確認
-                    meta_core = re.sub(
-                        r'株式会社|有限会社|合同会社|一般社団法人|NPO法人',
-                        '', clean_meta
-                    ).strip()
-                    if meta_core and len(meta_core) >= 3 and meta_core not in all_text:
-                        # LPに言及なし → このLP は代理ページの可能性 → meta_companyを優先
-                        logging.debug(
-                            f'[Finder] LPに"{meta_core}"言及なし → '
-                            f'"{company}"を破棄してmeta_company"{clean_meta}"優先'
-                        )
-                        company = clean_meta
-                        # LP電話番号が本当にmeta_company以外か逆引きで確認してから破棄
-                        # 確認できない場合は電話を保持（無条件破棄によるカバー落ちを防ぐ）
-                        if phone and not _verify_phone_via_reverse_serp(clean_meta, phone):
-                            # meta_companyと関係ない番号なので破棄
-                            phone = None
-                            _extra_phones.clear()
-                            _phone_seen.clear()
-                            logging.debug(
-                                f'[Finder] LP電話番号が"{clean_meta}"と無関係のため破棄: 電話SERPで再探索'
-                            )
-                        elif phone:
-                            logging.debug(
-                                f'[Finder] LP電話番号が"{clean_meta}"と紐付き確認 → 保持'
-                            )
+                logging.debug(f'[Finder] meta_company採用（LP抽出失敗のためフォールバック）: "{clean_meta}"')
+                company = clean_meta
         except Exception:
             pass
 

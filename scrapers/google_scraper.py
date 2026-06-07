@@ -1,4 +1,5 @@
 from __future__ import annotations
+import datetime
 import logging
 import random
 import time
@@ -8,6 +9,7 @@ from urllib.parse import parse_qs, quote, unquote, urlparse
 from playwright.sync_api import Page, TimeoutError as PlaywrightTimeoutError
 from scrapers.serp_api_scraper import scrape_google_via_api, is_serp_all_failed
 from utils.geo_utils import set_area_geolocation
+from state import config
 
 BASE_DIR = Path(__file__).parent.parent
 SNAPSHOT_DIR = BASE_DIR / 'logs' / 'snapshots'
@@ -119,26 +121,21 @@ def _get_captcha_backoff() -> tuple[int, float]:
 
 
 def _set_captcha_backoff(consecutive: int) -> None:
-    """CAPTCHAバックオフ状態をファイルに保存する（段階的バックオフ）"""
-    # 連続検出回数に応じて待機時間を段階的に延長:
-    #   1-4回: 指数バックオフ（30分〜2時間）
-    #   5-7回: 6時間（IPが一時ブロックされている可能性）
-    #   8回以上: 24時間（持続的ブロック → 長時間休止）
-    if consecutive >= 8:
-        wait = 86400   # 24h
-    elif consecutive >= 5:
-        wait = 21600   # 6h
-    else:
-        wait = min(1800 * (2 ** (consecutive - 1)), 7200)  # 最大2h
-    until = time.time() + wait
+    """CAPTCHA検出時: 翌4時までPlaywright Google使用を停止する"""
+    now = datetime.datetime.now()
+    next_4am = now.replace(hour=4, minute=0, second=0, microsecond=0)
+    if now.hour >= 4:
+        next_4am += datetime.timedelta(days=1)
+    until = next_4am.timestamp()
     try:
         _CAPTCHA_STATE_FILE.parent.mkdir(parents=True, exist_ok=True)
         _CAPTCHA_STATE_FILE.write_text(f'{consecutive},{until}')
     except Exception:
         pass
+    wait_min = int((until - time.time()) / 60)
     logging.warning(
-        f'[Google] CAPTCHA バックオフ設定: {consecutive}回連続検出、{wait//60}分間スキップ '
-        f'(解除: {time.strftime("%H:%M:%S", time.localtime(until))})'
+        f'[Google] CAPTCHA検出→翌4時まで停止: {consecutive}回目、{wait_min}分間スキップ '
+        f'(解除: {next_4am.strftime("%m/%d %H:%M")})'
     )
 
 
@@ -293,6 +290,11 @@ def scrape_google(page: Page, keyword: str, area: dict | None = None) -> list[st
     # ※ SerpAPI全失敗時でも人間模倣Playwrightで試みる（CAPTCHAバックオフが守る）
 
     # SerpAPI未設定時のみPlaywright直接スクレイピングにフォールバック
+    # 深夜0〜5時以外はPlaywright Google使用を停止（CAPTCHA防止）
+    google_hours = config.get('google_hours', [0, 1, 2, 3, 4, 5])
+    if time.localtime().tm_hour not in google_hours:
+        return None
+
     # CAPTCHAバックオフ中はスキップ
     consecutive, until = _get_captcha_backoff()
     if time.time() < until:

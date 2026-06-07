@@ -3,6 +3,7 @@ from __future__ import annotations
 import json
 import logging
 import os
+import sys
 import tempfile
 import threading
 import time
@@ -27,6 +28,9 @@ from state import (
 )
 
 CONTROL_PATH = BASE_DIR / 'control.json'
+
+# 全スレッド連続失敗カウンター（30秒×90回 = 45分で自己再起動）
+_consecutive_all_failed: int = 0
 
 
 def _kill_scraper_chrome(thread_name: str = 'both'):
@@ -326,7 +330,30 @@ def watchdog_worker():
                     # 新スレッドがビートを更新するまでの猶予としてリセット
                     _heartbeat[name] = now
 
-        # ③ キーワード自動補充（全アーカイブされたとき再有効化）
+        # ③ 全スレッド長期停止検知 → プロセス自己再起動
+        global _consecutive_all_failed
+        any_scraper_alive = any(
+            threads.get(n) is not None and threads[n].is_alive()
+            for n in ('yahoo', 'yahoo2')
+        )
+        if not any_scraper_alive:
+            _consecutive_all_failed += 1
+            if _consecutive_all_failed == 1:
+                logging.warning('[Watchdog] 全スクレイパースレッド停止 — 自己再起動タイマー開始 (45分後)')
+            if _consecutive_all_failed >= 90:  # 90 × 30秒 = 45分
+                logging.warning(f'[Watchdog] スクレイパー45分間回復不能 → プロセス自己再起動')
+                pid_lock = BASE_DIR / 'logs' / 'scraper.pid'
+                try:
+                    pid_lock.unlink(missing_ok=True)
+                except Exception:
+                    pass
+                os.execv(sys.executable, [sys.executable] + sys.argv)
+        else:
+            if _consecutive_all_failed > 0:
+                logging.info(f'[Watchdog] スクレイパー回復 — 自己再起動タイマーリセット')
+            _consecutive_all_failed = 0
+
+        # ④ キーワード自動補充（全アーカイブされたとき再有効化）
         _refill_keywords_if_empty()
 
         # ④ 自己修復サイクル（30分ごとに診断・必要なら修復）

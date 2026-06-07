@@ -137,7 +137,10 @@ def _run_yahoo_worker(name: str, profile_dir):
                                         logging.error(f'{tag} Google エラー: {e}')
                                         diag.record_scrape('Google', 0)
                                     beat(name)
-                                    _interruptible_sleep(random.uniform(min_delay / 3, max_delay / 3), name)
+                                    _interruptible_sleep(random.uniform(
+                                        config.get('google_min_delay', 180),
+                                        config.get('google_max_delay', 600),
+                                    ), name)
                                     beat(name)
 
                                 # google_first は廃止: SerpAPI(Google)と Yahoo は常に両方実行
