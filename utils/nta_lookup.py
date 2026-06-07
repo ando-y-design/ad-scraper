@@ -40,6 +40,9 @@ _MIN_INTERVAL = 1.5
 # 404受信後はセッション中の全APIコールを無効化
 _api_disabled: bool = False
 
+# 400エラーが返った名前はセッション内でスキップ（繰り返しリクエスト防止）
+_nta_400_skip: set[str] = set()
+
 
 def _get_app_id() -> str:
     """config.json から NTA APIキーを取得する"""
@@ -95,6 +98,10 @@ def search_by_name(name: str, mode: int = 2):
     if cache_key in _cache:
         return _cache[cache_key]
 
+    if name in _nta_400_skip:
+        logging.debug(f'[NTA] 400スキップ: "{name}"')
+        return None
+
     # レートリミット: 8スレッド共有、最低1.5秒間隔（スレッドセーフ）
     with _rate_lock:
         elapsed = time.time() - _last_request_time
@@ -146,6 +153,10 @@ def search_by_name(name: str, mode: int = 2):
                 ' 再有効化: https://www.houjin-bangou.nta.go.jp/webapi/'
             )
             return None
+        elif e.code == 400:
+            _nta_400_skip.add(name)
+            logging.warning(f'[NTA] 400エラー → セッション内スキップ登録: "{name}"')
+            return None  # 一時的なエラー → None（ヒットなしと区別）
         else:
             logging.warning(f'[NTA] HTTPエラー: {e.code}')
             return None  # 一時的なエラー → None（ヒットなしと区別）
