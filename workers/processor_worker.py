@@ -230,13 +230,28 @@ def processor_worker():
     with concurrent.futures.ThreadPoolExecutor(max_workers=_PROCESSOR_WORKERS) as executor:
         pending: dict[concurrent.futures.Future, dict] = {}
 
+        _LP_TIMEOUT = 120  # 1LPあたりの最大処理秒数（これを超えたらスキップ）
+        _enqueue_times: dict = {}  # future → enqueue timestamp
+
         while not shutdown_event.is_set():
             beat('processor')
+
+            # タイムアウトしたfutureをスキップ
+            now_ts = time.time()
+            for f in list(pending):
+                if not f.done() and now_ts - _enqueue_times.get(id(f), now_ts) > _LP_TIMEOUT:
+                    item = pending.pop(f)
+                    _enqueue_times.pop(id(f), None)
+                    logging.warning(
+                        f'[Processor] タイムアウト({_LP_TIMEOUT}s超) → スキップ: {item.get("lp_url", "?")}'
+                    )
+                    lp_queue.task_done()
 
             # 完了したfutureを処理
             done = [f for f in list(pending) if f.done()]
             for f in done:
                 item = pending.pop(f)
+                _enqueue_times.pop(id(f), None)
                 try:
                     result = f.result()
                     if result:
@@ -274,6 +289,7 @@ def processor_worker():
                     item = lp_queue.get(timeout=0.2)
                     f = executor.submit(_process_one_lp, item)
                     pending[f] = item
+                    _enqueue_times[id(f)] = time.time()
                 except queue.Empty:
                     break
 
