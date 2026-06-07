@@ -4,6 +4,11 @@ import threading
 import time
 from datetime import datetime
 
+
+def _half(s: str) -> str:
+    """全角英数・記号を半角に変換（日本語文字はそのまま）"""
+    return ''.join(chr(ord(c) - 0xFEE0) if 0xFF01 <= ord(c) <= 0xFF5E else c for c in (s or ''))
+
 import gspread
 from google.oauth2.service_account import Credentials
 
@@ -141,7 +146,7 @@ class SheetsWriter:
             data.get('ad_sources') or '',        # 広告ソース
             data.get('found_date') or '',        # 取得日時
             data.get('rank') or '',              # ランク
-            data.get('company_name') or '',      # 会社名
+            _half(data.get('company_name') or ''), # 会社名（全角英数→半角）
             data.get('lp_url') or '',            # LP URL
             data.get('phone') or '',             # 電話番号
             '',                                  # 担当名（手動）
