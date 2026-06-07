@@ -31,11 +31,12 @@ def _check_meta_page_alive(page) -> bool:
     """
     Metaページが生きているか軽量確認。
     scrape_meta() が内部で例外を飲んだ場合でも dead を検出できる。
+    page.url はクラッシュ済みページでも例外を投げないため evaluate() で実確認。
     """
     if page is None:
         return False
     try:
-        _ = page.url  # コンテキストが死んでいると例外になる
+        page.evaluate("1", timeout=2000)
         return True
     except Exception:
         return False
