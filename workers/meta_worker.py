@@ -86,12 +86,18 @@ def meta_worker():
 
                 recycle_every = config.get('browser_recycle_keywords', 80)
                 keyword_count = 0
+                _crash_streak = 0  # 連続クラッシュ数：5超でコンテキストごと再作成
                 beat('meta')
                 while not shutdown_event.is_set() and keyword_count < recycle_every:
                     if pause_event.is_set():
                         beat('meta')
                         time.sleep(5)
                         continue
+
+                    # 連続クラッシュが多い場合はコンテキストごと再作成（内部ループを抜ける）
+                    if _crash_streak >= 5:
+                        logging.warning(f'[Meta] 連続クラッシュ{_crash_streak}回 → コンテキスト再作成のため再起動')
+                        break
 
                     meta_cooling = config.get('timing', {}).get('meta_keyword_cooling_hours', 0)
                     min_delay = config.get('timing', {}).get('min_delay_seconds', 30)
@@ -130,6 +136,7 @@ def meta_worker():
                                     update_keyword_searched(conn, keyword)
                                     processed = True
                                     keyword_count += 1
+                                    _crash_streak = 0
                                     delay = random.uniform(min_delay, max_delay)
                                     _interruptible_sleep(delay, 'meta')
                                     continue  # Playwrightスキップ
@@ -140,12 +147,14 @@ def meta_worker():
                                 # ── ページ生死確認（scrape_meta が内部で例外を飲んでも検出） ──
                                 page_alive = _check_meta_page_alive(meta_page)
                                 if not page_alive:
-                                    logging.warning('[Meta] ページ死亡検知（browser closed） → コンテキスト再作成')
+                                    _crash_streak += 1
+                                    logging.warning(f'[Meta] ページ死亡検知（browser closed） → ページ再作成 (連続{_crash_streak}回)')
                                     meta_page = _recreate_meta_page(ctx)
                                     # キーワード消費せずに次のループへ（このキーワードは再試行される）
                                     _interruptible_sleep(5, 'meta')
                                     continue
 
+                                _crash_streak = 0
                                 diag.record_scrape('Meta', len(ads))
                                 if ads:
                                     diag.reset_meta_failures()
@@ -169,7 +178,8 @@ def meta_worker():
                                     'crash', 'connection closed while reading',
                                 )
                                 if any(k in err_lower for k in _BROWSER_DEAD_SIGNALS):
-                                    logging.warning(f'[Meta] ブラウザ死亡例外 → コンテキスト再作成: {e}')
+                                    _crash_streak += 1
+                                    logging.warning(f'[Meta] ブラウザ死亡例外 → ページ再作成 (連続{_crash_streak}回): {e}')
                                     meta_page = _recreate_meta_page(ctx)
                                     _interruptible_sleep(5, 'meta')
                                     continue  # キーワード消費しない
