@@ -227,25 +227,33 @@ def processor_worker():
     logging.info(f'[Processor] 起動 (並列数={_PROCESSOR_WORKERS})')
     beat('processor')
 
-    with concurrent.futures.ThreadPoolExecutor(max_workers=_PROCESSOR_WORKERS) as executor:
-        pending: dict[concurrent.futures.Future, dict] = {}
+    _LP_TIMEOUT = 120  # 1LPあたりの最大処理秒数
+    pending: dict[concurrent.futures.Future, dict] = {}
+    _enqueue_times: dict = {}
+    executor = concurrent.futures.ThreadPoolExecutor(max_workers=_PROCESSOR_WORKERS)
 
-        _LP_TIMEOUT = 120  # 1LPあたりの最大処理秒数（これを超えたらスキップ）
-        _enqueue_times: dict = {}  # future → enqueue timestamp
-
+    try:
         while not shutdown_event.is_set():
             beat('processor')
 
-            # タイムアウトしたfutureをスキップ
+            # タイムアウト検知: 詰まったfutureを破棄してexecutorごと新しく作り直す
             now_ts = time.time()
-            for f in list(pending):
-                if not f.done() and now_ts - _enqueue_times.get(id(f), now_ts) > _LP_TIMEOUT:
+            timed_out = [
+                f for f in list(pending)
+                if not f.done() and now_ts - _enqueue_times.get(id(f), now_ts) > _LP_TIMEOUT
+            ]
+            if timed_out:
+                for f in timed_out:
                     item = pending.pop(f)
                     _enqueue_times.pop(id(f), None)
                     logging.warning(
                         f'[Processor] タイムアウト({_LP_TIMEOUT}s超) → スキップ: {item.get("lp_url", "?")}'
                     )
                     lp_queue.task_done()
+                # 詰まったスレッドはkillできないのでexecutorを作り直して新鮮なスレッドを確保
+                executor.shutdown(wait=False)
+                executor = concurrent.futures.ThreadPoolExecutor(max_workers=_PROCESSOR_WORKERS)
+                logging.info('[Processor] タイムアウト後 executor 再作成完了')
 
             # 完了したfutureを処理
             done = [f for f in list(pending) if f.done()]
@@ -263,7 +271,6 @@ def processor_worker():
                             )
                         except queue.Full:
                             logging.warning('[Processor] result_queueが満杯 → DBへ直接保存を試みます')
-                            # キューが詰まった場合でもデータを消さずにDBへ直接保存
                             try:
                                 from storage.database import get_connection, insert_company
                                 _direct_conn = get_connection()
@@ -295,5 +302,8 @@ def processor_worker():
 
             if not pending:
                 time.sleep(1)
+
+    finally:
+        executor.shutdown(wait=False)
 
     logging.info('[Processor] 終了')
