@@ -203,16 +203,18 @@ class SheetsWriter:
         for attempt in range(3):
             try:
                 # タイムアウト付きで append_rows を実行（ハング防止）
+                end_row = self._next_row + len(rows) - 1
+                range_str = f'A{self._next_row}:N{end_row}'
                 with concurrent.futures.ThreadPoolExecutor(max_workers=1) as ex:
                     fut = ex.submit(
-                        self.worksheet.append_rows, rows,
+                        self.worksheet.update, range_str, rows,
                         value_input_option='USER_ENTERED'
                     )
                     try:
                         fut.result(timeout=_SHEETS_TIMEOUT)
                     except concurrent.futures.TimeoutError:
                         raise TimeoutError(
-                            f'Sheets append_rows が{_SHEETS_TIMEOUT}秒でタイムアウト'
+                            f'Sheets update が{_SHEETS_TIMEOUT}秒でタイムアウト'
                         )
                 self._next_row += len(rows)
                 self._batch.clear()
