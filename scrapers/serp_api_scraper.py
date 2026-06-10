@@ -1,4 +1,5 @@
 from __future__ import annotations
+from typing import Optional
 import base64
 import json
 import logging
@@ -138,7 +139,7 @@ def _load_config_keys() -> list[dict]:
         return []
 
 
-def scrape_google_via_api(keyword: str, location: str | None = None) -> list[str] | None:
+def scrape_google_via_api(keyword: str, location: Optional[str] = None) -> Optional[list[str]]:
     """
     SERP APIを使ってGoogle広告LPを取得する。
     複数キーをラウンドロビンでローテーション。
@@ -247,7 +248,7 @@ def scrape_google_via_api(keyword: str, location: str | None = None) -> list[str
     return None
 
 
-def _scrape_dataforseo(key: str, keyword: str, location: str | None) -> list[str] | None:
+def _scrape_dataforseo(key: str, keyword: str, location: Optional[str]) -> Optional[list[str]]:
     """
     DataForSEO Google Paid Ads エンドポイント。
     key フォーマット: "login:password"（コロン区切り）
@@ -315,7 +316,7 @@ def _scrape_dataforseo(key: str, keyword: str, location: str | None) -> list[str
         return None
 
 
-def _scrape_hasdata(key: str, keyword: str, location: str | None) -> list[str] | None:
+def _scrape_hasdata(key: str, keyword: str, location: Optional[str]) -> Optional[list[str]]:
     """
     HasData Google SERP API（x-api-key ヘッダー認証）。
     HasDataのJSONパーサーは広告抽出が不安定なため、
@@ -428,7 +429,7 @@ def _scrape_hasdata(key: str, keyword: str, location: str | None) -> list[str] |
         return None
 
 
-def _extract_lp_from_aclk(href: str) -> str | None:
+def _extract_lp_from_aclk(href: str) -> Optional[str]:
     """Google /aclk トラッキングURLからランディングページURLを抽出する（HasData用）"""
     try:
         from urllib.parse import parse_qs, unquote, urlparse
@@ -441,3 +442,169 @@ def _extract_lp_from_aclk(href: str) -> str | None:
     except Exception:
         pass
     return None
+
+
+# ─────────────────────────────────────────────
+# Bing 広告（リスティング）収集 — HasData Bing SERP API
+# ─────────────────────────────────────────────
+# Google と同じ HasData キーをそのまま使える（x-api-key ヘッダー認証）。
+# Bing 広告は www.bing.com/aclick?...&u=... のトラッキングURL経由。
+# u パラメータは「a1」プレフィックス + base64 でエンコードされた遷移先URL。
+# JSON ads フィールドが取れる場合はそちらを優先（aclick デコードより安定）。
+
+def _extract_lp_from_bing_aclick(href: str) -> Optional[str]:
+    """Bing /aclick トラッキングURLからランディングページURLを抽出する。
+    u パラメータは通常 'a1' + base64(URL)。直接 http が入っている場合もある。
+    """
+    try:
+        import base64
+        from urllib.parse import parse_qs, unquote, urlparse
+        parsed = urlparse(href)
+        params = parse_qs(parsed.query)
+        for param in ('u', 'murl', 'url'):
+            val = params.get(param, [None])[0]
+            if not val:
+                continue
+            val = unquote(val)
+            # 直接 http が入っているケース
+            if val.startswith('http') and 'bing.com' not in val:
+                return val
+            # 'a1'/'a2' 等のプレフィックスを剥がして base64 デコード
+            b64 = val
+            if len(b64) > 2 and b64[0] == 'a' and b64[1].isdigit():
+                b64 = b64[2:]
+            try:
+                pad = '=' * (-len(b64) % 4)
+                decoded = base64.urlsafe_b64decode(b64 + pad).decode('utf-8', 'ignore')
+                if decoded.startswith('http') and 'bing.com' not in decoded:
+                    return decoded
+            except Exception:
+                pass
+    except Exception:
+        pass
+    return None
+
+
+def scrape_bing_via_api(keyword: str, location: Optional[str] = None) -> Optional[list[str]]:
+    """
+    HasData Bing SERP API を使って Bing 広告（リスティング）LP を取得する。
+    Google と同じ serp_apis キーをローテーション利用する（hasdata プロバイダーのみ対応）。
+
+    Returns:
+        list[str]: 取得したLP URLリスト（空リスト=広告なし）
+        None: 有効なhasdataキー未設定 or 全キー失敗
+    """
+    keys = [e for e in _load_config_keys() if e.get('provider') == 'hasdata']
+    if not keys:
+        return None
+
+    # Google と同じ全失敗キャッシュを共有（HasData全体がダウン/枯渇している場合の無駄打ち防止）
+    if _is_all_failed_cached():
+        return None
+
+    for entry in keys:
+        key = entry.get('key', '')
+        try:
+            urls = _scrape_hasdata_bing(key, keyword, location)
+            if urls is not None:
+                return urls
+        except Exception as e:
+            logging.warning(f'[HasData-Bing] エラー: {e}')
+
+    logging.warning('[HasData-Bing] 全キーで失敗')
+    return None
+
+
+def _scrape_hasdata_bing(key: str, keyword: str, location: Optional[str]) -> Optional[list[str]]:
+    """HasData Bing SERP API（x-api-key ヘッダー認証）。
+    HTML を取得して /aclick リンクをパース。取れなければ JSON ads フィールドを使う。
+    """
+    try:
+        headers = {'x-api-key': key}
+        params = {
+            'q': keyword,
+            'gl': 'jp',
+            'hl': 'ja',
+            'num': 10,
+            'deviceType': 'desktop',
+        }
+        if location:
+            params['location'] = location
+
+        resp = requests.get(
+            'https://api.hasdata.com/scrape/bing/serp',
+            headers=headers,
+            params=params,
+            timeout=20,
+        )
+
+        if resp.status_code in (401, 403):
+            logging.warning(f'[HasData-Bing] 認証/クレジットエラー: {resp.text[:120]}')
+            return None
+        if not resp.ok:
+            logging.warning(f'[HasData-Bing] HTTP {resp.status_code}')
+            return None
+
+        data = resp.json()
+
+        # HTML（生Bing HTML）をダウンロードして /aclick を自前パース
+        html_url = data.get('requestMetadata', {}).get('html', '')
+        html_urls: list[str] = []
+        if html_url:
+            try:
+                html = requests.get(html_url, timeout=15).text
+                i = 0
+                while True:
+                    idx = html.find('/aclick', i)
+                    if idx == -1:
+                        break
+                    start = html.rfind('href="', max(0, idx - 300), idx)
+                    if start != -1:
+                        start += 6
+                        end = html.find('"', start)
+                        if end != -1:
+                            href = html[start:end].replace('&amp;', '&')
+                            if '/aclick' in href:
+                                if href.startswith('/'):
+                                    href = 'https://www.bing.com' + href
+                                lp = _extract_lp_from_bing_aclick(href)
+                                if lp and lp not in html_urls:
+                                    html_urls.append(lp)
+                    i = idx + 6
+                if html_urls:
+                    logging.info(f'[HasData-Bing] {len(html_urls)}件取得(HTML解析): "{keyword}"')
+                    return html_urls
+            except Exception as html_e:
+                logging.debug(f'[HasData-Bing] HTML解析失敗、JSONフォールバック: {html_e}')
+
+        # JSON ads フィールドから抽出
+        json_ads: list = []
+        for ads_key in ('ads', 'adsTop', 'adsBottom', 'paidResults', 'searchAds', 'sponsored'):
+            cand = data.get(ads_key, [])
+            if isinstance(cand, list) and cand:
+                json_ads = cand
+                break
+
+        json_urls: list[str] = []
+        for a in json_ads:
+            if not isinstance(a, dict):
+                continue
+            for lk in ('link', 'url', 'trackedLink', 'displayedLink', 'displayLink', 'domain'):
+                v = a.get(lk, '')
+                if v and str(v).startswith('http') and 'bing.com' not in str(v):
+                    if str(v) not in json_urls:
+                        json_urls.append(str(v))
+                    break
+
+        if json_urls:
+            logging.info(f'[HasData-Bing] {len(json_urls)}件取得(JSON): "{keyword}"')
+        else:
+            logging.info(f'[HasData-Bing] 広告0件: "{keyword}"')
+        return json_urls
+
+    except requests.Timeout:
+        logging.warning('[HasData-Bing] タイムアウト')
+        return None
+    except Exception as e:
+        logging.warning(f'[HasData-Bing] エラー: {e}')
+        return None

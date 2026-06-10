@@ -1,4 +1,5 @@
 from __future__ import annotations
+from typing import Optional
 import re
 import unicodedata
 
@@ -7,8 +8,9 @@ from processors.normalizer import normalize_phone, is_valid_phone
 # 電話番号らしき文字列を広めに取り、後で検証する
 # 全角括弧（）・全角スラッシュ／・半角スラッシュ/も許容
 # 例: （03）1234-5678 / 0120／000／000
+# 先頭0の直後に数字が続くことを要求し、長い連番への誤マッチを防ぐ
 _RAW_PHONE_PATTERN = re.compile(
-    r'0[\d\s\-\(\)（）\.ー－・／/]{8,16}'
+    r'0\d[\d\s\-\(\)（）\.ー－・／/]{7,15}'
 )
 
 _PRIORITY_PREFIXES = [
@@ -25,18 +27,27 @@ _PRIORITY_PREFIXES = [
 _PRIORITY_SME = ['mobile', 'landline_tokyo', 'landline', 'ip', 'landline_11', 'toll_free']
 # Enterprise（中堅・大手）: 固定→IP→携帯→フリーダイヤル（組織攻略）
 _PRIORITY_ENTERPRISE = ['landline_tokyo', 'landline', 'ip', 'mobile', 'landline_11', 'toll_free']
+# Direct（直通/代表番号優先・架電到達率最大化）:
+#   代表電話=固定(03/06→一般→11桁) を最優先 → 直通携帯 → IP(050) → フリーダイヤルは最後だが残す
+#   「電話をかけたら確実にその会社に繋がる」ことを最重視した順序
+_PRIORITY_DIRECT = ['landline_tokyo', 'landline', 'landline_11', 'mobile', 'ip', 'toll_free']
 
-_strategy: str = 'sme'
+_VALID_STRATEGIES = ('sme', 'enterprise', 'direct')
+_strategy: str = 'direct'
 
 
 def set_phone_strategy(strategy: str) -> None:
-    """main.pyの起動時に呼ぶ。'sme' or 'enterprise'"""
+    """main.pyの起動時に呼ぶ。'sme' / 'enterprise' / 'direct'"""
     global _strategy
-    _strategy = strategy if strategy in ('sme', 'enterprise') else 'sme'
+    _strategy = strategy if strategy in _VALID_STRATEGIES else 'direct'
 
 
 def get_priority_order() -> list[str]:
-    return _PRIORITY_ENTERPRISE if _strategy == 'enterprise' else _PRIORITY_SME
+    if _strategy == 'enterprise':
+        return _PRIORITY_ENTERPRISE
+    if _strategy == 'sme':
+        return _PRIORITY_SME
+    return _PRIORITY_DIRECT
 
 
 def is_freephone(phone: str) -> bool:
@@ -111,7 +122,7 @@ def extract_all_phones(text: str) -> list[str]:
     return result
 
 
-def extract_phone(text: str) -> str | None:
+def extract_phone(text: str) -> Optional[str]:
     if not text:
         return None
 

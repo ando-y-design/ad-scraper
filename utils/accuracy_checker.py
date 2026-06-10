@@ -272,7 +272,7 @@ def _check_one(row: dict, verbose: bool = False) -> dict:
             'result': str,           # 判定結果
             'confidence': str,       # 'high'|'medium'|'low'|'unknown'
             'detail': str,           # 詳細説明
-            'tokutei_url': str|None, # 特商法ページURL（見つかれば）
+            'tokutei_url': Optional[str], # 特商法ページURL（見つかれば）
         }
     """
     company = (row.get('company_name') or '').strip()
@@ -539,7 +539,7 @@ def load_history(n: int = 10) -> list[dict]:
     return results
 
 
-def format_report(result: dict, history: list[dict] | None = None) -> str:
+def format_report(result: dict, history: Optional[list[dict]] = None) -> str:
     ts = result.get('timestamp', '')[:16]
     s  = result.get('seigoritsu')
     if s is None:

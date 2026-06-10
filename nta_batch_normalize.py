@@ -5,6 +5,7 @@
   C. 正常なNTA未登録（英語名等）→ スキップ
 """
 from __future__ import annotations
+from typing import Optional
 import json
 import logging
 import re
@@ -66,7 +67,7 @@ def _count_legal(name: str) -> int:
     return len(_JP_LEGAL_RE.findall(name))
 
 
-def _pattern_clean(name: str) -> str | None:
+def _pattern_clean(name: str) -> Optional[str]:
     """パターンベースのクリーニング。クリーンになった名前またはNoneを返す"""
     original = name
 
@@ -100,7 +101,7 @@ def _pattern_clean(name: str) -> str | None:
     return original  # 変化なし（=pattern cleaningは不要）
 
 
-def _extract_from_reliable_pages(lp_url: str) -> str | None:
+def _extract_from_reliable_pages(lp_url: str) -> Optional[str]:
     """特商法・会社概要ページのみから会社名を抽出"""
     from urllib.parse import urlparse
     from processors.company_finder import (

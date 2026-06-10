@@ -1,4 +1,5 @@
 from __future__ import annotations
+from typing import Optional
 """
 競合代理店の「導入事例」ページから広告主企業を逆引きするスクレイパー
 
@@ -108,7 +109,7 @@ _COMPANY_NAME_RE = re.compile(
 )
 
 
-def _fetch(url: str, timeout: int = 10) -> BeautifulSoup | None:
+def _fetch(url: str, timeout: int = 10) -> Optional[BeautifulSoup]:
     try:
         resp = requests.get(url, headers=_HEADERS, timeout=timeout, allow_redirects=True)
         if resp.status_code == 200:
@@ -133,7 +134,7 @@ def _extract_case_links(soup: BeautifulSoup, base_url: str, pattern: str) -> lis
     return links[:30]
 
 
-def _extract_company_from_soup(soup: BeautifulSoup) -> str | None:
+def _extract_company_from_soup(soup: BeautifulSoup) -> Optional[str]:
     """事例ページから顧客企業名を抽出する（複数パターン対応）"""
 
     # 1. ラベル-値 構造（th/dt/td/div/span）
@@ -190,7 +191,7 @@ def _extract_company_from_soup(soup: BeautifulSoup) -> str | None:
     return None
 
 
-def _extract_client_url(soup: BeautifulSoup, agency_url: str) -> str | None:
+def _extract_client_url(soup: BeautifulSoup, agency_url: str) -> Optional[str]:
     """事例ページから顧客企業の公式サイトURLを抽出する。
     明確に「公式サイト」と示されているリンクのみ返す（誤収集防止）。
     """

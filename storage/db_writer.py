@@ -1,4 +1,5 @@
 from __future__ import annotations
+from typing import Optional
 """
 db_writer.py — SQLite書き込みモジュール
 
@@ -90,7 +91,7 @@ def upsert_keywords(keywords: list[str], source: str = "config") -> None:
 
 def get_next_keyword(
     source: str = "yahoo", cooling_hours: int = 24, area_name: str = "東京"
-) -> str | None:
+) -> Optional[str]:
     with sqlite3.connect(DB_PATH) as conn:
         row = conn.execute(
             """
@@ -143,7 +144,7 @@ def restore_archived_keywords() -> int:
 
 # ── 特商法URLキャッシュ ────────────────────────────────────────────────────
 
-def get_cached_tokutei_url(lp_url: str, ttl_hours: int = 72) -> str | None:
+def get_cached_tokutei_url(lp_url: str, ttl_hours: int = 72) -> Optional[str]:
     base = normalize_base_url(lp_url)
     with sqlite3.connect(DB_PATH) as conn:
         row = conn.execute(
@@ -247,7 +248,7 @@ def is_duplicate(lp_url: str, phone: str = "", normalized_name: str = "") -> boo
         return False
 
 
-def update_company_seen(lp_url: str, phone: str, ad_source: str) -> str | None:
+def update_company_seen(lp_url: str, phone: str, ad_source: str) -> Optional[str]:
     """重複検出時にseen_countとad_sourcesを更新し、新しいrankを返す"""
     base_url = normalize_base_url(lp_url)
     with _lock:

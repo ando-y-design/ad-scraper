@@ -1,4 +1,5 @@
 from __future__ import annotations
+from typing import Optional
 import html as _html
 import json
 import logging
@@ -183,7 +184,7 @@ _CONTACT_NAME_SUFFIX_RE = re.compile(
 )
 
 
-def _extract_contact_name(soup: BeautifulSoup) -> str | None:
+def _extract_contact_name(soup: BeautifulSoup) -> Optional[str]:
     """HPから担当者名（院長・代表・所長等）を抽出する。"""
     text = soup.get_text(separator='\n', strip=True)
     # ラベル前置き: 「院長：田中太郎」
@@ -201,7 +202,7 @@ def _extract_contact_name(soup: BeautifulSoup) -> str | None:
     return None
 
 
-def _extract_lp_headline(soup: BeautifulSoup) -> str | None:
+def _extract_lp_headline(soup: BeautifulSoup) -> Optional[str]:
     """LPのキャッチコピー・見出しを抽出する（H1 → og:title → title → og:description）。"""
     # H1（最優先: LPキャッチコピーが入ることが多い）
     h1 = soup.find('h1')
@@ -245,7 +246,7 @@ def _extract_lp_headline(soup: BeautifulSoup) -> str | None:
     return None
 
 
-def _fetch(url: str, timeout: int = 15, max_retries: int = 3) -> BeautifulSoup | None:
+def _fetch(url: str, timeout: int = 15, max_retries: int = 3) -> Optional[BeautifulSoup]:
     """URLをフェッチして BeautifulSoup を返す。リトライロジック+エンコーディング改善付き。
     タイムアウト15s・リトライ3回: 特商法ページの遅いサーバーに対応。
     """
@@ -582,8 +583,12 @@ def _normalize_name(name: str) -> str:
     # 閉じカッコなし（末尾まで続く）の括弧注記を除去
     # 例: "ICONIC Co.,Ltd.（グローバル転職のアイコニック" → "ICONIC Co.,Ltd."
     name = re.sub(r'\s*[（(][^）)]{4,}$', '', name).strip()
-    # 末尾のハイフン・アンダースコア・スラッシュ・孤立括弧を除去
-    name = re.sub(r'[\-‐–—－_/\\|｜・）)]+$', '', name).strip()
+    # 末尾のハイフン・アンダースコア・スラッシュ等を除去
+    name = re.sub(r'[\-‐–—－_/\\|｜・]+$', '', name).strip()
+    # 末尾の孤立した閉じ括弧（対応する開き括弧がない場合のみ）を除去。
+    # 対応括弧 例:「（東京本社）」「(株式会社○○)」は後続のペア処理で扱うため保持する。
+    if name.count('（') + name.count('(') < name.count('）') + name.count(')'):
+        name = re.sub(r'[）)]+$', '', name).strip()
     # 末尾の日本語文字に続く孤立ピリオドを除去
     # 例: "株式会社タキオン." → "株式会社タキオン"（英字末尾 "U.S.J." は保持）
     name = re.sub(r'(?<=[ぁ-んァ-ン一-鿿])\.\s*$', '', name).strip()
@@ -842,7 +847,7 @@ def _is_valid_company_labeled(name: str) -> bool:
     return True
 
 
-def _extract_from_json_ld(soup: BeautifulSoup) -> tuple[str | None, str | None]:
+def _extract_from_json_ld(soup: BeautifulSoup) -> tuple[Optional[str], Optional[str]]:
     """JSON-LD 構造化データから会社名・電話番号を抽出する（SPA対策）。
     @graph 構造にも対応。"""
     company = None
@@ -900,7 +905,7 @@ def _extract_from_json_ld(soup: BeautifulSoup) -> tuple[str | None, str | None]:
                 'ProfessionalService',
             )
 
-            def _extract_org_name_phone(obj: dict) -> tuple[str | None, str | None]:
+            def _extract_org_name_phone(obj: dict) -> tuple[Optional[str], Optional[str]]:
                 """organizationオブジェクトから (name, phone) を抽出するヘルパー"""
                 # name / legalName がリスト（多言語JSON-LD）の場合、最初の要素を使用
                 name_raw = obj.get('legalName', '') or obj.get('name', '')
@@ -982,7 +987,7 @@ def _extract_from_json_ld(soup: BeautifulSoup) -> tuple[str | None, str | None]:
     return company, phone
 
 
-def _extract_from_meta(soup: BeautifulSoup) -> str | None:
+def _extract_from_meta(soup: BeautifulSoup) -> Optional[str]:
     """og:site_name / application-name メタタグから会社名候補を取得する。"""
     for attrs in [
         {'property': 'og:site_name'},
@@ -1014,7 +1019,7 @@ def _extract_from_meta(soup: BeautifulSoup) -> str | None:
     return None
 
 
-def _extract_company_from_table(soup: BeautifulSoup) -> str | None:
+def _extract_company_from_table(soup: BeautifulSoup) -> Optional[str]:
     """th/dt → td/dd のテーブル構造から会社名を取得する。
     複数のHTML構造パターンに対応:
       1. <th>ラベル</th><td>値</td>（同一tr内の兄弟）
@@ -1085,7 +1090,7 @@ _INLINE_LABEL_COMPANY_RE = re.compile(
 )
 
 
-def _extract_company_from_divs(soup: BeautifulSoup) -> str | None:
+def _extract_company_from_divs(soup: BeautifulSoup) -> Optional[str]:
     """div/p/span のラベル-値ペア構造から会社名を抽出する。
     CSS flexbox/gridで作られた疑似テーブルに対応。"""
     for label_tag in soup.find_all(['div', 'p', 'span', 'li']):
@@ -1131,7 +1136,7 @@ def _extract_company_from_divs(soup: BeautifulSoup) -> str | None:
     return None
 
 
-def _extract_phone_from_element(el) -> str | None:
+def _extract_phone_from_element(el) -> Optional[str]:
     """指定要素内から電話番号を抽出する（同一コンテナスコープ用）。
     tel:リンク → ラベル付きth/dt/td → テキスト全体の順で探す。"""
     for a in el.find_all('a', href=True):
@@ -1214,7 +1219,7 @@ def _has_phone_number(el) -> bool:
     return bool(re.search(r'0\d[\d\-]{6,12}\d', text))
 
 
-def _extract_pair_from_containers(soup: BeautifulSoup) -> tuple[str | None, str | None]:
+def _extract_pair_from_containers(soup: BeautifulSoup) -> tuple[Optional[str], Optional[str]]:
     """同一コンテナ内で会社名・電話番号をペア抽出する。
     table/dl → section/article → div（両ラベルを含む最小ブロック）の順で探す。
     両方が同一コンテナ内に見つかった場合のみ返す。"""
@@ -1262,7 +1267,7 @@ def _extract_pair_from_containers(soup: BeautifulSoup) -> tuple[str | None, str 
     return None, None
 
 
-def _extract_company_from_spa_scripts(soup: BeautifulSoup) -> str | None:
+def _extract_company_from_spa_scripts(soup: BeautifulSoup) -> Optional[str]:
     """SPA初期状態変数（__NEXT_DATA__ / window.__INITIAL_STATE__ 等）から会社名を抽出。"""
     # 1. <script id="__NEXT_DATA__" type="application/json"> など
     for script in soup.find_all('script'):
@@ -1279,7 +1284,7 @@ def _extract_company_from_spa_scripts(soup: BeautifulSoup) -> str | None:
                     'organizationName', 'organization_name', 'corp_name', 'corpName',
                 })
 
-                def _find_in_json(obj: object, depth: int = 0) -> str | None:
+                def _find_in_json(obj: object, depth: int = 0) -> Optional[str]:
                     if depth > 8:
                         return None
                     if isinstance(obj, dict):
@@ -1322,7 +1327,7 @@ def _extract_company_from_spa_scripts(soup: BeautifulSoup) -> str | None:
     return None
 
 
-def _extract_company_from_soup(soup: BeautifulSoup) -> str | None:
+def _extract_company_from_soup(soup: BeautifulSoup) -> Optional[str]:
     # JSON-LD（SPA含む静的埋め込み）を最優先
     company_ld, _ = _extract_from_json_ld(soup)
     if company_ld:
@@ -1411,7 +1416,7 @@ def _extract_company_from_soup(soup: BeautifulSoup) -> str | None:
     # 最初の1マッチではなく全マッチを試し、_is_valid_company（厳格）で通るものを優先する
     # 例: パターン0が「イベント会社名」でパターン1が「株式会社○○」の場合、後者を返す
     text = soup.get_text(separator='\n', strip=True)
-    labeled_fallback: str | None = None  # _is_valid_company_labeled のみ通った候補を保持
+    labeled_fallback: Optional[str] = None  # _is_valid_company_labeled のみ通った候補を保持
     for pattern in _COMPANY_LABEL_PATTERNS:
         is_copyright = 'Copyright' in pattern
         for m in re.finditer(pattern, text, re.MULTILINE):
@@ -1426,37 +1431,80 @@ def _extract_company_from_soup(soup: BeautifulSoup) -> str | None:
     return labeled_fallback
 
 
+# 行ベースの特商法ペアリングでも、構造化抽出と同じ網羅的なラベル集合を使う。
+# （旧実装は会社ラベルが 販売業者|運営者|事業者名|… の一部しか見ておらず、
+#  「運営会社」等の別主体ラベルを境界として認識できず取り違えの原因になっていた）
 _TOKUTEI_COMPANY_LABELS = re.compile(
-    r'販売業者|運営者|事業者名?|会社名|法人名|商号|屋号', re.IGNORECASE
+    '|'.join(sorted((re.escape(k) for k in _COMPANY_TABLE_LABELS), key=len, reverse=True)),
+    re.IGNORECASE
 )
 _TOKUTEI_PHONE_LABELS = re.compile(
-    r'(?:電話|TEL|Tel|tel)[\s番号：:]*', re.IGNORECASE
+    '|'.join(sorted(
+        (re.escape(k) for k in (_PHONE_TABLE_LABELS | {'TEL', 'Tel', 'tel', '電話', '電話番号'})),
+        key=len, reverse=True
+    )),
+    re.IGNORECASE
 )
 
 
-def _pick_phone_from_tokutei_section(lines: list[str], company_core: str, phones: list[str]) -> str | None:
+def _pick_phone_from_tokutei_section(lines: list[str], company_core: str, phones: list[str]) -> Optional[str]:
     """特商法形式テキストから、会社ラベル行の近傍にある電話ラベル行の番号を返す。
     会社名コアが会社ラベル行に含まれ、±8行以内に電話ラベル行があり、
-    その行に含まれる番号が candidates に入っていれば採用する。"""
+    その行に含まれる番号が candidates に入っていれば採用する。
+
+    取り違え防止のため:
+      ① 位置順ではなく「会社ラベル行に最も近い」電話ラベル行を優先する。
+      ② 別主体(別の販売業者/運営会社ラベル)のブロック境界を跨がない
+         — 会社ラベル行と電話ラベル行の間に company_core を含まない別の
+         会社ラベル行があれば、その電話は別主体のものとみなして探索を打ち切る。
+    """
     candidate_digits = {re.sub(r'\D', '', p): p for p in phones if p}
+    if not candidate_digits:
+        return None
+
+    def _phone_in_line(idx: int) -> Optional[str]:
+        if not _TOKUTEI_PHONE_LABELS.search(lines[idx]):
+            return None
+        for p in extract_all_phones(lines[idx]):
+            digits = re.sub(r'\D', '', p)
+            if digits in candidate_digits:
+                return candidate_digits[digits]
+        return None
+
+    def _is_other_company_label(idx: int) -> bool:
+        """別主体の会社ラベル行か（会社ラベルを持つが company_core を含まない）。"""
+        return bool(_TOKUTEI_COMPANY_LABELS.search(lines[idx])) and company_core not in lines[idx]
+
     for i, line in enumerate(lines):
-        if _TOKUTEI_COMPANY_LABELS.search(line) and company_core in line:
-            # 会社ラベル行を基点に ±8 行以内で電話ラベル行を探す
-            window_start = max(0, i - 8)
-            window_end = min(len(lines), i + 9)
-            for j in range(window_start, window_end):
-                if j == i:
-                    continue
-                if _TOKUTEI_PHONE_LABELS.search(lines[j]):
-                    found = extract_all_phones(lines[j])
-                    for p in found:
-                        digits = re.sub(r'\D', '', p)
-                        if digits in candidate_digits:
-                            return candidate_digits[digits]
+        if not (_TOKUTEI_COMPANY_LABELS.search(line) and company_core in line):
+            continue
+        # 会社ラベル行 i を基点に、距離 d=1..8 で近い行から両方向に探索する。
+        # 別主体の会社ラベル行に当たった方向はそこで打ち切り（ブロック境界）。
+        up_blocked = False
+        down_blocked = False
+        for d in range(1, 9):
+            down = i + d
+            if not down_blocked and down < len(lines):
+                if _is_other_company_label(down):
+                    down_blocked = True
+                else:
+                    hit = _phone_in_line(down)
+                    if hit:
+                        return hit
+            up = i - d
+            if not up_blocked and up >= 0:
+                if _is_other_company_label(up):
+                    up_blocked = True
+                else:
+                    hit = _phone_in_line(up)
+                    if hit:
+                        return hit
+            if up_blocked and down_blocked:
+                break
     return None
 
 
-def _pick_phone_nearest_company(text: str, company: str, phones: list[str]) -> str | None:
+def _pick_phone_nearest_company(text: str, company: str, phones: list[str]) -> Optional[str]:
     """複数電話番号から会社名テキスト位置に最も近いものを選ぶ。
     優先順:
       1. 特商法セクション（販売業者/運営者ラベル行 ±8行の電話ラベル）
@@ -1530,7 +1578,7 @@ def _pick_phone_nearest_company(text: str, company: str, phones: list[str]) -> s
 
 
 @lru_cache(maxsize=256)
-def _search_phone_by_company_name(company: str, origin: str | None = None) -> str | None:
+def _search_phone_by_company_name(company: str, origin: Optional[str] = None) -> Optional[str]:
     """
     会社名でYahoo検索し、SERPに表示された電話番号をフォールバック取得する。
     origin が指定された場合、取得した番号がそのドメイン上に実在するか検証する。
@@ -1596,7 +1644,7 @@ def _extract_phones_from_soup(soup: BeautifulSoup) -> list[str]:
     seen: set[str] = set()
     result: list[str] = []
 
-    def _add(phone: str | None):
+    def _add(phone: Optional[str]):
         if phone and phone not in seen:
             seen.add(phone)
             result.append(phone)
@@ -1762,12 +1810,12 @@ def _extract_phones_from_soup(soup: BeautifulSoup) -> list[str]:
     return result
 
 
-def _extract_phone_from_soup(soup: BeautifulSoup) -> str | None:
+def _extract_phone_from_soup(soup: BeautifulSoup) -> Optional[str]:
     phones = _extract_phones_from_soup(soup)
     return phones[0] if phones else None
 
 
-def _fetch_and_extract(url: str, timeout: int = 8, max_retries: int = 1) -> tuple[str | None, str | None]:
+def _fetch_and_extract(url: str, timeout: int = 8, max_retries: int = 1) -> tuple[Optional[str], Optional[str]]:
     """1URLを取得して (company, phone) を返す。失敗時は (None, None)。
     優先順: JSON-LDペア → 同一コンテナペア → テキストラベル近接ペア → 別々フォールバック"""
     soup = _fetch(url, timeout=timeout, max_retries=max_retries)
@@ -1805,13 +1853,13 @@ def _parallel_search(
     need_phone: bool,
     max_workers: int = 3,
     timeout: float = 10.0,
-) -> tuple[str | None, str | None]:
+) -> tuple[Optional[str], Optional[str]]:
     """
     URLリストを並列フェッチして最初に見つかった company/phone を返す。
     同一URLで両方取れた場合を最優先。それ以外は別URL結合をフォールバックとする。
     """
-    company: str | None = None
-    phone: str | None = None
+    company: Optional[str] = None
+    phone: Optional[str] = None
 
     executor = ThreadPoolExecutor(max_workers=max_workers)
     try:
@@ -1853,10 +1901,10 @@ def _parallel_search(
     return company, phone
 
 
-def _extract_company_from_text(text: str) -> str | None:
+def _extract_company_from_text(text: str) -> Optional[str]:
     """プレーンテキストから会社名をパターンマッチングで抽出する（最終手段）。
     全マッチを試し、_is_valid_company（厳格）で通るものを優先する。"""
-    labeled_fallback: str | None = None
+    labeled_fallback: Optional[str] = None
     for pattern in _COMPANY_LABEL_PATTERNS:
         is_copyright = 'Copyright' in pattern
         for m in re.finditer(pattern, text, re.MULTILINE):
@@ -1870,7 +1918,7 @@ def _extract_company_from_text(text: str) -> str | None:
     return labeled_fallback
 
 
-def _extract_pair_from_text(text: str) -> tuple[str | None, str | None]:
+def _extract_pair_from_text(text: str) -> tuple[Optional[str], Optional[str]]:
     """プレーンテキストから会社名・電話番号をペアで抽出する。
     会社ラベル行と電話ラベル行が隣接（±5行以内）している場合に両方を返す。
     複数ラベルがある場合は最も近い（会社, 電話）ペアを採用する。
@@ -1973,7 +2021,7 @@ _ONCLICK_URL_RE = re.compile(
 )
 
 
-def _resolve_link(href: str, origin: str, base_dir: str, allow_external: bool = False) -> str | None:
+def _resolve_link(href: str, origin: str, base_dir: str, allow_external: bool = False) -> Optional[str]:
     """href を絶対 URL に解決する。解決できない場合は None。
     urljoin で / ./ ../ 相対パスを正しく処理する。"""
     if not href or href.startswith('#') or href.startswith('mailto:') or href.startswith('tel:'):
@@ -2204,7 +2252,7 @@ def _verify_phone_via_reverse_serp(company: str, phone: str) -> bool:
 
 
 @lru_cache(maxsize=256)
-def _find_company_origin_from_serp(company: str) -> str | None:
+def _find_company_origin_from_serp(company: str) -> Optional[str]:
     """会社名でYahoo検索し、公式サイトのoriginを推定して返す。失敗時None。"""
     from urllib.parse import quote
     try:
@@ -2249,7 +2297,7 @@ def _find_company_origin_from_serp(company: str) -> str | None:
 
 
 @lru_cache(maxsize=256)
-def _search_company_by_phone(phone: str) -> str | None:
+def _search_company_by_phone(phone: str) -> Optional[str]:
     """電話番号でYahoo検索し、会社名を逆引きするフォールバック。
     電話番号は取れたが会社名が取れなかった場合の最終手段。"""
     from urllib.parse import quote
@@ -2299,7 +2347,7 @@ _PAGE_SUFFIX_RE = re.compile(
 )
 
 
-def _sanitize_company_final(name: str) -> str | None:
+def _sanitize_company_final(name: str) -> Optional[str]:
     """find_company_info の最終 return 直前に呼ぶ包括的クリーニング。
     Noneを返した場合はその会社名を保存しない。
     新しい汚れパターンは STEP 2〜4 に追記するだけでよい。"""
@@ -2351,6 +2399,7 @@ def _sanitize_company_final(name: str) -> str | None:
     _m_in = re.search(r'\bin\b(.+)', name, re.IGNORECASE)
     if _m_in:
         after_in = _m_in.group(1).strip()
+        # "こちらは" / "当社" / "弊社" 等の前置きを除去
         after_in = re.sub(r'^(?:こちらは|当社|弊社|私達は|私たちは)\s*', '', after_in).strip()
         if _LEGAL_ENTITY_RE.search(after_in) and len(after_in) >= 4:
             name = after_in
@@ -2373,22 +2422,22 @@ def _sanitize_company_final(name: str) -> str | None:
 
 def find_company_info(
     lp_url: str,
-    meta_company: str | None = None,
-    nta_api_key: str | None = None,
-) -> tuple[str | None, str | None, str | None, str | None, str | None]:
+    meta_company: Optional[str] = None,
+    nta_api_key: Optional[str] = None,
+) -> tuple[Optional[str], Optional[str], Optional[str], Optional[str], Optional[str]]:
     """(company, best_phone, all_phones_str, contact_name, lp_headline) を返す。"""
     if not lp_url:
-        return None, None, None, None, None
+        return None, None, None, None, None, {}
 
     try:
         from urllib.parse import urlparse
         parsed = urlparse(lp_url)
         origin = f'{parsed.scheme}://{parsed.netloc}'
     except Exception:
-        return None, None, None, None, None
+        return None, None, None, None, None, {}
 
     if not origin or '://' not in origin:
-        return None, None, None, None, None
+        return None, None, None, None, None, {}
 
     # LP ビルダープラットフォーム判定
     # peraichi.com / wix.com 等が origin の場合、origin 配下のパスは
@@ -2397,13 +2446,13 @@ def find_company_info(
     if _skip_origin_paths:
         logging.debug(f'[Finder] LP ビルダードメイン検出 → originパス検索スキップ: {origin}')
 
-    company: str | None = None
-    phone: str | None = None
-    contact_name: str | None = None
-    lp_headline: str | None = None
+    company: Optional[str] = None
+    phone: Optional[str] = None
+    contact_name: Optional[str] = None
+    lp_headline: Optional[str] = None
     _phone_seen: set[str] = set()
     _extra_phones: list[str] = []
-    _contact_phone: str | None = None  # contactページ由来（低信頼）: 最終フォールバック専用
+    _contact_phone: Optional[str] = None  # contactページ由来（低信頼）: 最終フォールバック専用
     all_text = ""
 
     def _record_phones(phones: list[str]):

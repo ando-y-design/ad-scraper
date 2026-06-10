@@ -1,4 +1,5 @@
 from __future__ import annotations
+from typing import Optional
 import logging
 import random
 from datetime import datetime, timedelta
@@ -120,9 +121,9 @@ def get_next_keyword(
     conn,
     source: str,
     cooling_hours: int,
-    boost_patterns: list[str] | None = None,
+    boost_patterns: Optional[list[str]] = None,
     boost_factor: float = 10.0,
-) -> dict | None:
+) -> Optional[dict]:
     """
     利用可能キーワードから重み付きランダムで1件選ぶ。
     重み = sqrt(total_found + 1)  ← 実績の多いキーワードを優先しつつ偏りを抑える。
@@ -169,11 +170,11 @@ def get_next_keyword_with_area(
     source: str,
     cooling_hours: int,
     areas: list[dict],
-    boost_patterns: list[str] | None = None,
+    boost_patterns: Optional[list[str]] = None,
     boost_factor: float = 10.0,
-) -> dict | None:
+) -> Optional[dict]:
     """
-    Returns {'keyword': str, 'area': dict|None}.
+    Returns {'keyword': str, 'area': Optional[dict]}.
     Each (keyword, area) pair has independent cooling via keyword_area_log.
     With 150 keywords × 10 areas = 1500 unique search slots before any cooldown.
     Falls back to area=None if no areas configured.
@@ -231,7 +232,7 @@ def get_next_keyword_with_area(
     return {'keyword': kw, 'area': area}
 
 
-def update_keyword_area_searched(conn, keyword: str, area_name: str | None):
+def update_keyword_area_searched(conn, keyword: str, area_name: Optional[str]):
     """
     (keyword, area) ペアの冷却を記録。keywords.last_searched も更新して
     archive_stale_keywords との互換性を保つ。

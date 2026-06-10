@@ -103,6 +103,7 @@ def meta_worker():
                     min_delay = config.get('timing', {}).get('min_delay_seconds', 30)
                     max_delay = config.get('timing', {}).get('max_delay_seconds', 180)
                     boost = _get_boost_patterns()
+                    areas = config.get('areas', [])
 
                     try:
                         beat('meta')
@@ -119,10 +120,11 @@ def meta_worker():
                         kw_info = get_next_keyword(conn, 'meta', meta_cooling, boost_patterns=boost)
                         if kw_info:
                             keyword = kw_info['keyword']
-                            logging.info(f'[Meta] キーワード: "{keyword}"')
+                            search_query = keyword
+                            logging.info(f'[Meta] キーワード: "{search_query}"')
                             try:
                                 # Meta API（公式）を優先 → 失敗時はPlaywrightにフォールバック
-                                api_ads = scrape_meta_via_api(keyword)
+                                api_ads = scrape_meta_via_api(search_query)
                                 if api_ads is not None:
                                     # API成功（0件も含む）
                                     diag = get_diagnostics()
@@ -132,7 +134,7 @@ def meta_worker():
                                     for ad_item in api_ads:
                                         ad_url = ad_item['url'] if isinstance(ad_item, dict) else ad_item
                                         ad_pname = ad_item.get('page_name') if isinstance(ad_item, dict) else None
-                                        _enqueue_lp(ad_url, 'Meta', keyword, ad_pname)
+                                        _enqueue_lp(ad_url, 'Meta', search_query, ad_pname)
                                     update_keyword_searched(conn, keyword)
                                     processed = True
                                     keyword_count += 1
@@ -141,7 +143,7 @@ def meta_worker():
                                     _interruptible_sleep(delay, 'meta')
                                     continue  # Playwrightスキップ
 
-                                ads = scrape_meta(meta_page, keyword)
+                                ads = scrape_meta(meta_page, search_query)
                                 diag = get_diagnostics()
 
                                 # ── ページ生死確認（scrape_meta が内部で例外を飲んでも検出） ──
@@ -169,7 +171,7 @@ def meta_worker():
                                     except Exception:
                                         pass
                                 for ad in ads:
-                                    _enqueue_lp(ad['url'], 'Meta', keyword, ad.get('company'))
+                                    _enqueue_lp(ad['url'], 'Meta', search_query, ad.get('company'))
                             except Exception as e:
                                 err_lower = str(e).lower()
                                 _BROWSER_DEAD_SIGNALS = (
@@ -195,7 +197,7 @@ def meta_worker():
                             _interruptible_sleep(delay, 'meta')
 
                         if not processed:
-                            logging.info('[Meta] 利用可能なキーワードなし（全アーカイブ済み）。60秒待機')
+                            logging.info('[Meta] 利用可能なキーワードなし（全エリア×KW消化済み）。60秒待機')
                             _interruptible_sleep(60, 'meta')
 
                     except Exception as e:

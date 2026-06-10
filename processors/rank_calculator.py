@@ -5,6 +5,7 @@ def _count_sources(ad_sources: str) -> int:
     return len(set((ad_sources or "").split(",")) - {""})
 
 
+
 def calc_rank(seen_count: int, ad_sources: str) -> str:
     """
     媒体数 × 収集回数でSABCランクを算出する。

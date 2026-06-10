@@ -28,6 +28,7 @@
     "google": true,
     "yahoo": true,
     "meta": true,
+    "bing": true,
     "google_first": true,
     "yahoo2": false
   },
@@ -61,6 +62,7 @@
   "drive_share_emails": [],
   "ngrok": {"enabled": false, "authtoken": "", "domain": ""},
   "auto_code_repair": false,
-  "phone_strategy": "enterprise",
+  "phone_strategy": "direct",
+  "processor_workers": 3,
   "meta_api": {"enabled": false, "app_id": "", "app_secret": ""}
 }

@@ -1,4 +1,5 @@
 from __future__ import annotations
+from typing import Optional
 """
 brushup.py — DBの既存レコードを再フェッチして電話番号・社名をブラッシュアップする
 """
@@ -23,7 +24,7 @@ def is_freephone(phone: str) -> bool:
     return re.sub(r"\D", "", phone).startswith(_FREEPHONE)
 
 
-def fetch(url: str, session: requests.Session) -> str | None:
+def fetch(url: str, session: requests.Session) -> Optional[str]:
     try:
         r = session.get(url, headers=_HEADERS, timeout=12, allow_redirects=True)
         r.encoding = r.apparent_encoding or "utf-8"

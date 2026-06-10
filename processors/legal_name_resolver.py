@@ -13,6 +13,7 @@ API 登録（無料・即時）:
 """
 import logging
 import re
+import time
 import unicodedata
 import xml.etree.ElementTree as ET
 
@@ -138,7 +139,7 @@ def needs_jp_name_lookup(name: str) -> bool:
     return bool(_EN_LEGAL_SUFFIX_RE.search(name))
 
 
-def resolve_legal_name(name: str, api_key: str) -> str | None:
+def resolve_legal_name(name: str, api_key: str) -> Optional[str]:
     """
     NTA 法人番号 WebAPI で正式な日本語法人登録名を検索して返す。
     ヒットしない・API キーが空の場合は None を返す（元の名前を維持）。
@@ -253,24 +254,61 @@ def lookup_corporate_number(name: str, api_key: str) -> tuple[Optional[str], Opt
 
 # ── 内部処理 ─────────────────────────────────────────────────────────────────
 
-def _query_nta(core_name: str, api_key: str, original_name: str = '') -> tuple[str | None, str | None]:
-    """NTA API にリクエストして (最適法人名, 法人番号) を返す。"""
+# レート制限・一時障害に対するバックオフ設定
+_NTA_MAX_ATTEMPTS = 3          # 合計試行回数（初回 + リトライ2回）
+_NTA_BACKOFF_BASE = 1.5        # 待機秒の基数（1.5, 3.0, ... と指数的に増やす）
+_NTA_RETRY_STATUS = (429, 500, 502, 503, 504)  # リトライ対象のHTTPステータス
+
+
+def _query_nta(core_name: str, api_key: str, original_name: str = '') -> tuple[Optional[str], Optional[str]]:
+    """NTA API にリクエストして (最適法人名, 法人番号) を返す。
+    429/5xx・タイムアウト等の一時障害は指数バックオフで最大 _NTA_MAX_ATTEMPTS 回リトライする。
+    並列ワーカー数を増やすとレート制限に当たりやすくなるため、ここで吸収する。"""
     if core_name in _nta_400_skip:
         logging.debug(f'[NTA] 400スキップ: "{core_name}"')
         return None, None
 
-    try:
-        resp = requests.get(
-            _NTA_API_URL,
-            params={
-                'id': api_key,
-                'name': _to_fullwidth(core_name),  # 半角→全角変換（NTA API要件）
-                'type': '12',   # XML形式
-            },
-            headers=_HEADERS,
-            timeout=20,
-        )
+    resp = None
+    for attempt in range(_NTA_MAX_ATTEMPTS):
+        try:
+            resp = requests.get(
+                _NTA_API_URL,
+                params={
+                    'id': api_key,
+                    'name': _to_fullwidth(core_name),  # 半角→全角変換（NTA API要件）
+                    'type': '12',   # XML形式
+                },
+                headers=_HEADERS,
+                timeout=20,
+            )
+        except requests.RequestException as e:
+            # ネットワーク/タイムアウト → リトライ
+            if attempt < _NTA_MAX_ATTEMPTS - 1:
+                wait = _NTA_BACKOFF_BASE * (2 ** attempt)
+                logging.debug(f'[NTA] 通信エラー（{attempt+1}回目）{wait:.1f}s後に再試行: {e}')
+                time.sleep(wait)
+                continue
+            logging.warning(f'[NTA] network error "{core_name}": {e}')
+            return '__NTA_ERROR__', None
 
+        # レート制限・一時的サーバエラー → バックオフして再試行
+        if resp.status_code in _NTA_RETRY_STATUS and attempt < _NTA_MAX_ATTEMPTS - 1:
+            wait = _NTA_BACKOFF_BASE * (2 ** attempt)
+            # Retry-After ヘッダがあれば尊重する
+            retry_after = resp.headers.get('Retry-After')
+            if retry_after:
+                try:
+                    wait = max(wait, float(retry_after))
+                except ValueError:
+                    pass
+            logging.info(f'[NTA] HTTP {resp.status_code}（レート制限/一時障害）{wait:.1f}s後に再試行: "{core_name}"')
+            time.sleep(wait)
+            continue
+        break  # 成功 or リトライ対象外 or 最終試行 → ループ脱出
+
+    try:
+        if resp is None:
+            return '__NTA_ERROR__', None
         if resp.status_code == 400:
             _nta_400_skip.add(core_name)
             logging.warning(f'[NTA] 400エラー → セッション内スキップ登録: "{core_name}"')
@@ -321,8 +359,13 @@ def _query_nta(core_name: str, api_key: str, original_name: str = '') -> tuple[s
 
 
 def _normalize_for_match(s: str) -> str:
-    """全角→半角正規化 + 小文字化（マッチング用）。"""
-    return unicodedata.normalize('NFKC', s).lower()
+    """全角→半角正規化 + 小文字化 + 空白除去（マッチング用）。
+    空白は表記揺れに過ぎず同一性を変えないため除去する
+    （例: "ABC 商事" と "ABC商事" を同一として扱い、正当な一致の取りこぼしを防ぐ）。
+    ハイフン等は別会社を取り違える恐れがあるため残す。"""
+    normalized = unicodedata.normalize('NFKC', s).lower()
+    # NFKC後は全角スペースもASCIIスペースになっている。空白類のみ除去する
+    return re.sub(r'\s+', '', normalized)
 
 
 def _best_match(core_name: str, candidates: list[str], original_name: str = '') -> str:

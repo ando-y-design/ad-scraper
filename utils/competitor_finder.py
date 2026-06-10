@@ -1,4 +1,5 @@
 from __future__ import annotations
+from typing import Optional
 """
 競合他社検索モジュール。
 Claude AIを使って同業種・同エリアの競合他社名を取得する。
@@ -27,7 +28,7 @@ def _get_api_key() -> str:
         return ''
 
 
-def _cache_key(keyword: str, area_name: str | None) -> tuple[str, str]:
+def _cache_key(keyword: str, area_name: Optional[str]) -> tuple[str, str]:
     """キャッシュキー: (キーワード先頭2語, エリア名)"""
     kw_short = ' '.join(keyword.split()[:2])
     return (kw_short, area_name or '')
@@ -35,7 +36,7 @@ def _cache_key(keyword: str, area_name: str | None) -> tuple[str, str]:
 
 def find_competitors_ai(
     keyword: str,
-    area_name: str | None,
+    area_name: Optional[str],
     limit: int = 3,
 ) -> list[str]:
     """

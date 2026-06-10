@@ -1,5 +1,6 @@
 from __future__ import annotations
 import datetime
+from typing import Optional
 import logging
 import random
 import time
@@ -50,7 +51,7 @@ def warmup(page: Page):
         pass
 
 
-def _extract_lp_from_aclk(href: str) -> str | None:
+def _extract_lp_from_aclk(href: str) -> Optional[str]:
     """Google /aclk トラッキングURLからランディングページURLを抽出する"""
     try:
         parsed = urlparse(href)
@@ -174,7 +175,7 @@ def _human_type(page: Page, selector: str, text: str) -> None:
         i += 1
 
 
-def _human_scroll(page: Page, times: int | None = None) -> None:
+def _human_scroll(page: Page, times: Optional[int] = None) -> None:
     """結果ページを人間らしくスクロールして「読む」動作を模倣する"""
     n = times or random.randint(2, 5)
     for _ in range(n):
@@ -187,7 +188,7 @@ def _human_scroll(page: Page, times: int | None = None) -> None:
         time.sleep(random.uniform(0.3, 0.8))
 
 
-def _human_search(page: Page, keyword: str, location_hint: str | None = None) -> bool:
+def _human_search(page: Page, keyword: str, location_hint: Optional[str] = None) -> bool:
     """
     google.co.jp を開いて検索ボックスにキーワードを人間らしくタイプして検索する。
     Returns: True=成功, False=失敗
@@ -271,7 +272,7 @@ def _human_search(page: Page, keyword: str, location_hint: str | None = None) ->
     return True
 
 
-def scrape_google(page: Page, keyword: str, area: dict | None = None) -> list[str] | None:
+def scrape_google(page: Page, keyword: str, area: Optional[dict] = None) -> Optional[list[str]]:
     """
     area: config.json の areas リストの1要素 (name/lat/lng/serp_location)。
           指定するとブラウザGPS座標を変更し、Google検索URLに near= を追加する。

@@ -1,4 +1,5 @@
 from __future__ import annotations
+from typing import Optional
 """情報取得・解析ワーカー（並列処理）"""
 import concurrent.futures
 import logging
@@ -66,10 +67,21 @@ def is_blocked_domain(domain: str) -> bool:
 # ─────────────────────────────────────────────
 # THREAD 2: 情報取得・解析（並列処理）
 # ─────────────────────────────────────────────
-_PROCESSOR_WORKERS = 1  # LP取得を逐次処理（PC負荷軽減）
+# LP解析の並列数。config["processor_workers"]で上書き可（既定3）。
+# スレッドローカルDB接続(WAL)なので並列安全。値を上げるほどLP取得スループットは
+# 上がるが、同時HTTP/NTA API呼び出しも増えるため 1〜6 程度を推奨。
+_PROCESSOR_WORKERS_DEFAULT = 3
 
 
-def _process_one_lp(item: dict, conn=None) -> dict | None:
+def _get_processor_workers() -> int:
+    try:
+        n = int(config.get('processor_workers', _PROCESSOR_WORKERS_DEFAULT))
+    except (TypeError, ValueError):
+        n = _PROCESSOR_WORKERS_DEFAULT
+    return max(1, min(n, 8))
+
+
+def _process_one_lp(item: dict, conn=None) -> Optional[dict]:
     """1件のLPを処理して結果dictを返す。失敗時はNone。
     conn は使用しない（後方互換のため残す）。
     ThreadPoolExecutor から呼ばれるため、スレッドローカル接続を使う。
@@ -153,42 +165,43 @@ def _process_one_lp(item: dict, conn=None) -> dict | None:
         logging.debug(f'[Processor] 会社名/電話番号取得失敗: {lp_url}')
         return None
 
-    # フリーダイヤル（0120/0800/0570/0990）のみの場合はスキップ
+    # フリーダイヤル（0120/0800/0570/0990）でも捨てない（架電リストとして有効）。
+    # 直通/代表番号は company_finder 側で既に優先採用済み。ここではフリーダイヤルしか
+    # 取れなかったケースも残す（オーナー方針: 2026-06-10）。
     from processors.phone_finder import is_freephone
     if is_freephone(phone):
-        logging.debug(f'[Processor] フリーダイヤルのみのためスキップ: {phone} / {lp_url}')
-        return None
+        logging.debug(f'[Processor] フリーダイヤルのみだが採用: {phone} / {lp_url}')
 
     normalized = normalize_company(company_name)
 
     if is_duplicate(conn, normalized, base_domain, phone):
-        existing = conn.execute(
-            'SELECT ad_sources, normalized_name, all_keywords, sheet_row FROM companies '
+        existing_src = conn.execute(
+            'SELECT ad_sources, normalized_name, sheet_row FROM companies '
             'WHERE normalized_name=? OR base_url=? OR phone=?',
             (normalized, base_domain, phone)
         ).fetchone()
-        if existing:
-            old_sources = existing['ad_sources'] or ''
-            update_ad_sources(conn, existing['normalized_name'], source)
-            append_keyword(conn, existing['normalized_name'], keyword)
+        if existing_src:
+            old_sources = existing_src['ad_sources'] or ''
+            update_ad_sources(conn, existing_src['normalized_name'], source)
+            append_keyword(conn, existing_src['normalized_name'], keyword)
             # 新媒体が追加された場合はランクを再計算してSheets更新イベントを送る
             new_sources = conn.execute(
                 'SELECT ad_sources, all_keywords FROM companies WHERE normalized_name=?',
-                (existing['normalized_name'],)
+                (existing_src['normalized_name'],)
             ).fetchone()
-            if new_sources and existing['sheet_row']:
+            if new_sources and existing_src['sheet_row']:
                 from processors.rank_calculator import calc_rank, _count_sources
                 old_rank_src = _count_sources(old_sources)
                 new_rank_src = _count_sources(new_sources['ad_sources'] or '')
                 if new_rank_src > old_rank_src:
-                    seen = conn.execute('SELECT seen_count FROM companies WHERE normalized_name=?', (existing['normalized_name'],)).fetchone()
+                    seen = conn.execute('SELECT seen_count FROM companies WHERE normalized_name=?', (existing_src['normalized_name'],)).fetchone()
                     new_rank = calc_rank(seen['seen_count'] if seen else 2, new_sources['ad_sources'] or '')
                     try:
                         result_queue.put({
                             '_type': 'rank_update',
-                            'sheet_row': existing['sheet_row'],
+                            'sheet_row': existing_src['sheet_row'],
                             'rank': new_rank,
-                            'normalized_name': existing['normalized_name'],
+                            'normalized_name': existing_src['normalized_name'],
                         }, timeout=5)
                     except Exception:
                         pass
@@ -200,6 +213,7 @@ def _process_one_lp(item: dict, conn=None) -> dict | None:
 
     from processors.rank_calculator import calc_rank
     rank = calc_rank(1, source)
+
 
     return {
         'company_name': company_name.strip(),
@@ -224,13 +238,14 @@ def _process_one_lp(item: dict, conn=None) -> dict | None:
 
 
 def processor_worker():
-    logging.info(f'[Processor] 起動 (並列数={_PROCESSOR_WORKERS})')
+    workers = _get_processor_workers()
+    logging.info(f'[Processor] 起動 (並列数={workers})')
     beat('processor')
 
     _LP_TIMEOUT = 120  # 1LPあたりの最大処理秒数
     pending: dict[concurrent.futures.Future, dict] = {}
     _enqueue_times: dict = {}
-    executor = concurrent.futures.ThreadPoolExecutor(max_workers=_PROCESSOR_WORKERS)
+    executor = concurrent.futures.ThreadPoolExecutor(max_workers=workers)
 
     try:
         while not shutdown_event.is_set():
@@ -252,7 +267,7 @@ def processor_worker():
                     lp_queue.task_done()
                 # 詰まったスレッドはkillできないのでexecutorを作り直して新鮮なスレッドを確保
                 executor.shutdown(wait=False)
-                executor = concurrent.futures.ThreadPoolExecutor(max_workers=_PROCESSOR_WORKERS)
+                executor = concurrent.futures.ThreadPoolExecutor(max_workers=workers)
                 logging.info('[Processor] タイムアウト後 executor 再作成完了')
 
             # 完了したfutureを処理
@@ -291,7 +306,7 @@ def processor_worker():
                     lp_queue.task_done()
 
             # 空きスロット分だけキューから取り出して並列投入
-            while len(pending) < _PROCESSOR_WORKERS:
+            while len(pending) < workers:
                 try:
                     item = lp_queue.get(timeout=0.2)
                     f = executor.submit(_process_one_lp, item)

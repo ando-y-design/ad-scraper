@@ -1,4 +1,5 @@
 from __future__ import annotations
+from typing import Optional
 """Yahoo/Google 広告収集ワーカー"""
 import logging
 import queue
@@ -9,6 +10,7 @@ from playwright.sync_api import sync_playwright
 
 from scrapers.google_scraper import scrape_google, warmup
 from scrapers.yahoo_scraper import scrape_yahoo
+from scrapers.bing_scraper import scrape_bing
 from storage.database import get_connection
 from utils.browser import create_browser_context, new_stealth_page
 from utils.keywords import (
@@ -30,8 +32,8 @@ def _get_boost_patterns() -> list[str]:
     return config.get('priority_keywords', [])
 
 
-def _enqueue_lp(url: str, source: str, keyword: str, meta_company: str | None = None,
-                area_name: str | None = None, serp_phone: str | None = None):
+def _enqueue_lp(url: str, source: str, keyword: str, meta_company: Optional[str] = None,
+                area_name: Optional[str] = None, serp_phone: Optional[str] = None):
     try:
         lp_queue.put(
             {'lp_url': url, 'source': source, 'keyword': keyword,
@@ -43,7 +45,7 @@ def _enqueue_lp(url: str, source: str, keyword: str, meta_company: str | None = 
         logging.debug(f'lp_queueが満杯。スキップ: {url}')
 
 
-def _interruptible_sleep(seconds: float, beat_name: str | None = None):
+def _interruptible_sleep(seconds: float, beat_name: Optional[str] = None):
     end = time.time() + seconds
     last_beat = time.time()
     while time.time() < end and not shutdown_event.is_set():
@@ -178,6 +180,38 @@ def _run_yahoo_worker(name: str, profile_dir):
                                         else:
                                             logging.error(f'{tag} エラー: {e}')
                                         diag.record_scrape('Yahoo', 0)
+                                    beat(name)
+
+                                # Bing 広告（リスティング）— Playwright直接スクレイピング（無料）。
+                                # Bingはbot検知が緩く広告もHTMLに直接出るため同じブラウザで収集可能。
+                                # ページ負荷分散のため primary(yahoo) スレッドのみ実行。
+                                if name == 'yahoo' and config.get('sources', {}).get('bing', False):
+                                    try:
+                                        bing_urls = scrape_bing(page, keyword, area=area,
+                                                                heartbeat=lambda: beat(name))
+                                        diag.record_scrape('Bing', len(bing_urls))
+                                        _aname = area['name'] if area else None
+                                        for url in bing_urls:
+                                            _enqueue_lp(url, 'Bing', keyword, area_name=_aname)
+                                    except Exception as e:
+                                        err_lower = str(e).lower()
+                                        if any(k in err_lower for k in ('target closed', 'context or browser has been closed',
+                                                                         'connection reset', 'browser closed', 'crash')):
+                                            logging.warning(f'{tag} Bingページクラッシュ → ページ再作成: {e}')
+                                            try:
+                                                page.close()
+                                            except Exception:
+                                                pass
+                                            try:
+                                                page = new_stealth_page(ctx)
+                                                logging.info(f'{tag} ページ再作成完了')
+                                            except Exception as e2:
+                                                logging.error(f'{tag} ページ再作成失敗（コンテキスト死亡）: {e2}')
+                                                _ctx_dead[name].set()
+                                                return
+                                        else:
+                                            logging.error(f'{tag} Bing エラー: {e}')
+                                        diag.record_scrape('Bing', 0)
                                     beat(name)
 
                                 update_keyword_area_searched(conn, keyword, area['name'] if area else None)

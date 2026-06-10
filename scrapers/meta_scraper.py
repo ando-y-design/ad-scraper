@@ -1,4 +1,5 @@
 from __future__ import annotations
+from typing import Optional
 import json
 import logging
 import random
@@ -33,7 +34,7 @@ _LOGIN_MODAL_CLOSE_SELECTORS = [
 ]
 
 
-def _find_key(data, candidates: list) -> str | None:
+def _find_key(data, candidates: list) -> Optional[str]:
     if not isinstance(data, dict):
         return None
     for key in candidates:

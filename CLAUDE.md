@@ -5,6 +5,28 @@ Google/Yahoo/Meta広告を収集し、会社名・電話番号を抽出してSQL
 
 ---
 
+## ★ 最重要4ポイント（オーナー明示・全判断の基準）
+
+このスクレイパーが達成すべき4つの絶対条件。設計・修正の優先順位はこの順序で判断する。
+
+1. **法人番号が取れていること**
+   国税庁(NTA)法人番号APIで正しい法人番号が付与されること。
+
+2. **G列の会社名が「正式な法人登録名」であること**
+   抽出した会社名をそのまま使わず、NTA正式法人名に補正したものをG列に出力する。
+
+3. **LP/HPから会社名と電話番号が正しく取れていること**
+   - 特商法ページ・会社概要ページを最優先で見るのがベスト。
+   - **最重要: 電話番号にかけたとき実際にその会社へ繋がること**（電話番号の正確性＝架電可能性）。
+   - 会社名と電話番号が「別主体のもの」を取り違えないこと（販売業者/運営会社の混同に注意）。
+
+4. **収集スピードが最大化されていること**
+   Google / Yahoo / Meta（必要ならBingも）を**並列実行**し、各ソースがそれぞれ安定して回ること。
+
+> 精度（1〜3）を優先しつつ、スピード（4）を最大化する。精度とスピードが衝突する場合は精度を優先。
+
+---
+
 ## ディレクトリ構成
 
 ```
@@ -17,12 +39,13 @@ ad_scraper/
 ├── workers/
 │   ├── yahoo_worker.py        # Yahoo/Google広告収集（Playwright）
 │   ├── meta_worker.py         # Meta広告収集（Playwright）
-│   ├── processor_worker.py    # LP解析・会社情報抽出（8並列）
+│   ├── processor_worker.py    # LP解析・会社情報抽出（config.processor_workers並列・既定3）
 │   ├── writer_worker.py       # SQLite + Google Sheets書き込み
 │   └── watchdog_worker.py     # ハング検知・スレッド再起動・自己修復
 ├── scrapers/
 │   ├── google_scraper.py      # Google広告 URL抽出
 │   ├── yahoo_scraper.py       # Yahoo広告 URL抽出
+│   ├── bing_scraper.py        # Bing広告 URL抽出（Playwright・無料）
 │   └── meta_scraper.py        # Meta広告ライブラリ
 ├── processors/
 │   ├── company_finder.py      # 特商法ページ解析・会社名抽出
@@ -58,7 +81,7 @@ ad_scraper/
 yahoo_worker / yahoo2_worker (Google/Yahoo広告収集)
 meta_worker  (Meta広告収集)
     ↓ lp_queue (広告URL・メタデータ)
-processor_worker (LP解析・会社情報抽出・8並列)
+processor_worker (LP解析・会社情報抽出・config.processor_workers並列・既定3)
     ↓ result_queue (会社情報)
 writer_worker (SQLite INSERT + Google Sheets追記)
 
@@ -99,8 +122,11 @@ watchdog → repair_worker → 問題検知 → pending_fixes.jsonlに記録
   "nta_api_key": "",
   "keywords": [...],
   "auto_code_repair": false,
-  "phone_strategy": "sme",
-  "sources": {"google": true, "yahoo": true, "meta": true},
+  "phone_strategy": "direct",   // direct=直通/代表番号優先(架電到達率最大) / sme / enterprise
+  "sources": {"google": true, "yahoo": true, "meta": true, "bing": true},
+  // bing=Bingリスティング広告収集。Playwright直接スクレイピング（無料・bot検知が緩い）。
+  // yahooワーカーの同一ブラウザで収集。primary(yahoo)スレッドのみ実行（yahoo2では走らない）。
+  // ※HasData Bing SERP API版も serp_api_scraper.py に休眠状態で残置（クレジット契約時に切替可）。
   "timing": {"min_delay_seconds": 60, "max_delay_seconds": 300}
 }
 ```

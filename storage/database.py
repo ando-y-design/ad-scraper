@@ -1,4 +1,5 @@
 from __future__ import annotations
+from typing import Optional
 import sqlite3
 import threading
 from pathlib import Path
@@ -16,7 +17,34 @@ def get_connection() -> sqlite3.Connection:
         conn.execute('PRAGMA synchronous=NORMAL')
         conn.execute('PRAGMA foreign_keys=ON')
         _local.conn = conn
+        _register_thread_cleanup()
     return _local.conn
+
+
+def _register_thread_cleanup() -> None:
+    """スレッド終了時にDB接続をcloseするfinalizer登録。"""
+    thread = threading.current_thread()
+    if getattr(thread, '_db_cleanup_registered', False):
+        return
+    thread._db_cleanup_registered = True
+
+    original_run = getattr(thread, 'run', None)
+    if original_run is None:
+        return
+
+    def _patched_run():
+        try:
+            original_run()
+        finally:
+            conn = getattr(_local, 'conn', None)
+            if conn is not None:
+                try:
+                    conn.close()
+                except Exception:
+                    pass
+            _local.conn = None
+
+    thread.run = _patched_run
 
 
 def init_db() -> sqlite3.Connection:
@@ -30,6 +58,7 @@ def init_db() -> sqlite3.Connection:
             base_url         TEXT UNIQUE,
             phone            TEXT UNIQUE,
             phones           TEXT,
+            phone_source     TEXT,
             industry         TEXT,
             ad_sources       TEXT,
             sheet_row        INTEGER,
@@ -40,7 +69,9 @@ def init_db() -> sqlite3.Connection:
             lp_headline      TEXT,
             all_keywords     TEXT,
             area_name        TEXT,
-            corporate_number TEXT
+            corporate_number TEXT,
+            seen_count       INTEGER DEFAULT 1,
+            rank             TEXT
         );
 
         CREATE TABLE IF NOT EXISTS keywords (
@@ -76,7 +107,8 @@ def init_db() -> sqlite3.Connection:
     for col, typedef in [
         ('contact_name', 'TEXT'), ('lp_headline', 'TEXT'),
         ('all_keywords', 'TEXT'), ('area_name', 'TEXT'),
-        ('corporate_number', 'TEXT'),
+        ('corporate_number', 'TEXT'), ('phone_source', 'TEXT'),
+        ('seen_count', 'INTEGER DEFAULT 1'), ('rank', 'TEXT'),
     ]:
         if col not in existing_cols:
             conn.execute(f'ALTER TABLE companies ADD COLUMN {col} {typedef}')
@@ -181,7 +213,7 @@ def is_duplicate(conn: sqlite3.Connection, normalized_name: str, base_url: str, 
     return False
 
 
-def get_existing_sources(conn: sqlite3.Connection, normalized_name: str) -> str | None:
+def get_existing_sources(conn: sqlite3.Connection, normalized_name: str) -> Optional[str]:
     row = conn.execute(
         'SELECT ad_sources FROM companies WHERE normalized_name = ?',
         (normalized_name,)
@@ -265,7 +297,7 @@ def get_competitors(
     conn: sqlite3.Connection,
     keyword: str,
     normalized_name: str,
-    area_name: str | None = None,
+    area_name: Optional[str] = None,
     limit: int = 3,
 ) -> list[str]:
     """
