@@ -67,7 +67,18 @@ def is_blocked_domain(domain: str) -> bool:
 # ─────────────────────────────────────────────
 # THREAD 2: 情報取得・解析（並列処理）
 # ─────────────────────────────────────────────
-_PROCESSOR_WORKERS = 1  # LP取得を逐次処理（PC負荷軽減）
+# LP解析の並列数。config["processor_workers"]で上書き可（既定3）。
+# スレッドローカルDB接続(WAL)なので並列安全。値を上げるほどLP取得スループットは
+# 上がるが、同時HTTP/NTA API呼び出しも増えるため 1〜6 程度を推奨。
+_PROCESSOR_WORKERS_DEFAULT = 3
+
+
+def _get_processor_workers() -> int:
+    try:
+        n = int(config.get('processor_workers', _PROCESSOR_WORKERS_DEFAULT))
+    except (TypeError, ValueError):
+        n = _PROCESSOR_WORKERS_DEFAULT
+    return max(1, min(n, 8))
 
 
 def _process_one_lp(item: dict, conn=None) -> Optional[dict]:
@@ -227,10 +238,11 @@ def _process_one_lp(item: dict, conn=None) -> Optional[dict]:
 
 
 def processor_worker():
-    logging.info(f'[Processor] 起動 (並列数={_PROCESSOR_WORKERS})')
+    workers = _get_processor_workers()
+    logging.info(f'[Processor] 起動 (並列数={workers})')
     beat('processor')
 
-    with concurrent.futures.ThreadPoolExecutor(max_workers=_PROCESSOR_WORKERS) as executor:
+    with concurrent.futures.ThreadPoolExecutor(max_workers=workers) as executor:
         pending: dict[concurrent.futures.Future, dict] = {}
 
         while not shutdown_event.is_set():
@@ -272,7 +284,7 @@ def processor_worker():
                     lp_queue.task_done()
 
             # 空きスロット分だけキューから取り出して並列投入
-            while len(pending) < _PROCESSOR_WORKERS:
+            while len(pending) < workers:
                 try:
                     item = lp_queue.get(timeout=0.2)
                     f = executor.submit(_process_one_lp, item)

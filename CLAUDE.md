@@ -39,7 +39,7 @@ ad_scraper/
 ├── workers/
 │   ├── yahoo_worker.py        # Yahoo/Google広告収集（Playwright）
 │   ├── meta_worker.py         # Meta広告収集（Playwright）
-│   ├── processor_worker.py    # LP解析・会社情報抽出（8並列）
+│   ├── processor_worker.py    # LP解析・会社情報抽出（config.processor_workers並列・既定3）
 │   ├── writer_worker.py       # SQLite + Google Sheets書き込み
 │   └── watchdog_worker.py     # ハング検知・スレッド再起動・自己修復
 ├── scrapers/
@@ -80,7 +80,7 @@ ad_scraper/
 yahoo_worker / yahoo2_worker (Google/Yahoo広告収集)
 meta_worker  (Meta広告収集)
     ↓ lp_queue (広告URL・メタデータ)
-processor_worker (LP解析・会社情報抽出・8並列)
+processor_worker (LP解析・会社情報抽出・config.processor_workers並列・既定3)
     ↓ result_queue (会社情報)
 writer_worker (SQLite INSERT + Google Sheets追記)
 
