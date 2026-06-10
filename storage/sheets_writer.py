@@ -25,9 +25,25 @@ def get_sheets_client(credentials_path: str):
     return gspread.authorize(creds)
 
 
+_TARGET_WORKSHEET = 'リスト'
+
+
 def get_worksheet(client, sheet_id: str):
     spreadsheet = client.open_by_key(sheet_id)
-    return spreadsheet.worksheet('リスト')
+    try:
+        return spreadsheet.worksheet(_TARGET_WORKSHEET)
+    except gspread.WorksheetNotFound:
+        # タブ名の前後空白ゆらぎを吸収する。
+        # 手動編集で 'リスト ' のように末尾スペースが付くと完全一致で見つからず、
+        # Sheets書き込みがセッション全体で停止してしまうため、strip()一致で救済する。
+        for ws in spreadsheet.worksheets():
+            if ws.title.strip() == _TARGET_WORKSHEET:
+                logging.warning(
+                    f'[Sheets] タブ名の空白ゆらぎを吸収: {ws.title!r} を使用 '
+                    f'(期待値: {_TARGET_WORKSHEET!r})'
+                )
+                return ws
+        raise
 
 
 def setup_sheet(spreadsheet, worksheet):

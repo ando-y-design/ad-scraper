@@ -3,6 +3,7 @@ from typing import Optional
 """SQLite + Sheets 書き込みワーカー"""
 import logging
 import queue
+import time
 
 from processors.rank_calculator import calc_rank
 from storage.database import (
@@ -41,20 +42,18 @@ def writer_worker():
     sheet_id = sheets_cfg.get('sheet_id', '')
     creds_path = str(BASE_DIR / sheets_cfg.get('service_account_key_path', 'credentials.json'))
 
-    writer: Optional[SheetsWriter] = None
-    try:
+    def _connect_sheets() -> SheetsWriter:
+        """Sheetsクライアント＋ワークシートに接続し SheetsWriter を返す（失敗時は例外送出）。"""
         client = get_sheets_client(creds_path)
         ws = get_worksheet(client, sheet_id)
-        writer = SheetsWriter(
+        w = SheetsWriter(
             ws,
             batch_size=config.get('timing', {}).get('batch_size', 50),
             batch_timeout=config.get('timing', {}).get('batch_timeout_seconds', 300),
             shutdown_event=shutdown_event,
             heartbeat_callback=lambda: beat('writer'),
         )
-        logging.info('[Writer] Google Sheets接続成功')
-        writer.sync_headers()  # ヘッダー行が古い場合は自動更新
-
+        w.sync_headers()  # ヘッダー行が古い場合は自動更新
         # 重複チェック台帳を初期化
         try:
             from storage.dedup_registry import init_registry
@@ -62,40 +61,65 @@ def writer_worker():
             init_registry(client, account_id)
         except Exception as e:
             logging.warning(f'[Writer] 重複チェック台帳初期化失敗（無効化）: {e}')
+        return w
 
-        # 起動時: 前回未送信データをSheetsに再送
+    def _resend_unexported(w: SheetsWriter) -> None:
+        """DBにあるがSheets未反映の行を再送する（起動時・再接続時に呼ぶ）。"""
         unexported = get_unexported(conn)
-        if unexported:
-            logging.info(f'[Writer] 未送信データ {len(unexported)}件を再送します')
-            for db_row in unexported:
-                keys = db_row.keys()
-                flush_results = writer.add({
-                    'company_name': db_row['company_name'],
-                    'normalized_name': db_row['normalized_name'],
-                    'lp_url': db_row['lp_url'] or '',
-                    'phone': db_row['phone'] or '',
-                    'phones': db_row['phones'] if 'phones' in keys else None,
-                    'ad_sources': db_row['ad_sources'] or '',
-                    'keyword': db_row['keyword'] or '',
-                    'found_date': db_row['found_date'],
-                    'rank': db_row['rank'] if 'rank' in keys else '',
-                    'corporate_number': db_row['corporate_number'] if 'corporate_number' in keys else '',
-                    'contact_name': db_row['contact_name'] if 'contact_name' in keys else None,
-                    'lp_headline': db_row['lp_headline'] if 'lp_headline' in keys else None,
-                    'all_keywords': db_row['all_keywords'] if 'all_keywords' in keys else None,
-                    'competitors': '',
-                })
-                if flush_results:
-                    _mark_batch_exported(conn, flush_results)
-            flush_results = writer.flush()
+        if not unexported:
+            return
+        logging.info(f'[Writer] 未送信データ {len(unexported)}件を再送します')
+        for db_row in unexported:
+            keys = db_row.keys()
+            flush_results = w.add({
+                'company_name': db_row['company_name'],
+                'normalized_name': db_row['normalized_name'],
+                'lp_url': db_row['lp_url'] or '',
+                'phone': db_row['phone'] or '',
+                'phones': db_row['phones'] if 'phones' in keys else None,
+                'ad_sources': db_row['ad_sources'] or '',
+                'keyword': db_row['keyword'] or '',
+                'found_date': db_row['found_date'],
+                'rank': db_row['rank'] if 'rank' in keys else '',
+                'corporate_number': db_row['corporate_number'] if 'corporate_number' in keys else '',
+                'contact_name': db_row['contact_name'] if 'contact_name' in keys else None,
+                'lp_headline': db_row['lp_headline'] if 'lp_headline' in keys else None,
+                'all_keywords': db_row['all_keywords'] if 'all_keywords' in keys else None,
+                'competitors': '',
+            })
             if flush_results:
                 _mark_batch_exported(conn, flush_results)
+        flush_results = w.flush()
+        if flush_results:
+            _mark_batch_exported(conn, flush_results)
 
+    writer: Optional[SheetsWriter] = None
+    try:
+        writer = _connect_sheets()
+        logging.info('[Writer] Google Sheets接続成功')
+        _resend_unexported(writer)
     except Exception as e:
-        logging.error(f'[Writer] Google Sheets接続失敗: {e}')
+        logging.error(f'[Writer] Google Sheets接続失敗（後で再接続を試みます）: {e}')
+
+    # 一過性のSheets障害（WorksheetNotFound・レート制限等）から自己回復する。
+    # 接続を起動時1回きりにすると、1度の失敗でセッション全体のSheets書き込みが
+    # 止まってしまうため、未接続時は一定間隔で再接続を試みる。
+    _RECONNECT_INTERVAL = 120
+    _last_reconnect_try = time.time()
 
     while not shutdown_event.is_set():
         beat('writer')
+
+        # Sheets未接続なら定期的に再接続を試みる
+        if writer is None and (time.time() - _last_reconnect_try) >= _RECONNECT_INTERVAL:
+            _last_reconnect_try = time.time()
+            try:
+                writer = _connect_sheets()
+                logging.info('[Writer] Google Sheets再接続成功')
+                _resend_unexported(writer)
+            except Exception as e:
+                logging.warning(f'[Writer] Google Sheets再接続失敗（{_RECONNECT_INTERVAL}s後に再試行）: {e}')
+
         try:
             data = result_queue.get(timeout=5)
         except queue.Empty:
