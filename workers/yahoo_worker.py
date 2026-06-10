@@ -10,7 +10,7 @@ from playwright.sync_api import sync_playwright
 
 from scrapers.google_scraper import scrape_google, warmup
 from scrapers.yahoo_scraper import scrape_yahoo
-from scrapers.serp_api_scraper import scrape_bing_via_api
+from scrapers.bing_scraper import scrape_bing
 from storage.database import get_connection
 from utils.browser import create_browser_context, new_stealth_page
 from utils.keywords import (
@@ -179,20 +179,35 @@ def _run_yahoo_worker(name: str, profile_dir):
                                         diag.record_scrape('Yahoo', 0)
                                     beat(name)
 
-                                # Bing 広告（リスティング）— HasData Bing SERP API（純API・ブラウザ不要）。
-                                # 二重課金を避けるため primary(yahoo) スレッドのみ実行。
+                                # Bing 広告（リスティング）— Playwright直接スクレイピング（無料）。
+                                # Bingはbot検知が緩く広告もHTMLに直接出るため同じブラウザで収集可能。
+                                # ページ負荷分散のため primary(yahoo) スレッドのみ実行。
                                 if name == 'yahoo' and config.get('sources', {}).get('bing', False):
                                     try:
-                                        beat(name)
-                                        _bloc = area.get('serp_location') if area else None
-                                        bing_urls = scrape_bing_via_api(keyword, location=_bloc)
-                                        if bing_urls is not None:
-                                            diag.record_scrape('Bing', len(bing_urls))
-                                            _aname = area['name'] if area else None
-                                            for url in bing_urls:
-                                                _enqueue_lp(url, 'Bing', keyword, area_name=_aname)
+                                        bing_urls = scrape_bing(page, keyword, area=area,
+                                                                heartbeat=lambda: beat(name))
+                                        diag.record_scrape('Bing', len(bing_urls))
+                                        _aname = area['name'] if area else None
+                                        for url in bing_urls:
+                                            _enqueue_lp(url, 'Bing', keyword, area_name=_aname)
                                     except Exception as e:
-                                        logging.error(f'{tag} Bing エラー: {e}')
+                                        err_lower = str(e).lower()
+                                        if any(k in err_lower for k in ('target closed', 'context or browser has been closed',
+                                                                         'connection reset', 'browser closed', 'crash')):
+                                            logging.warning(f'{tag} Bingページクラッシュ → ページ再作成: {e}')
+                                            try:
+                                                page.close()
+                                            except Exception:
+                                                pass
+                                            try:
+                                                page = new_stealth_page(ctx)
+                                                logging.info(f'{tag} ページ再作成完了')
+                                            except Exception as e2:
+                                                logging.error(f'{tag} ページ再作成失敗（コンテキスト死亡）: {e2}')
+                                                _ctx_dead[name].set()
+                                                return
+                                        else:
+                                            logging.error(f'{tag} Bing エラー: {e}')
                                         diag.record_scrape('Bing', 0)
                                     beat(name)
 

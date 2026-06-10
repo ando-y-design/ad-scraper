@@ -45,6 +45,7 @@ ad_scraper/
 ├── scrapers/
 │   ├── google_scraper.py      # Google広告 URL抽出
 │   ├── yahoo_scraper.py       # Yahoo広告 URL抽出
+│   ├── bing_scraper.py        # Bing広告 URL抽出（Playwright・無料）
 │   └── meta_scraper.py        # Meta広告ライブラリ
 ├── processors/
 │   ├── company_finder.py      # 特商法ページ解析・会社名抽出
@@ -123,8 +124,9 @@ watchdog → repair_worker → 問題検知 → pending_fixes.jsonlに記録
   "auto_code_repair": false,
   "phone_strategy": "direct",   // direct=直通/代表番号優先(架電到達率最大) / sme / enterprise
   "sources": {"google": true, "yahoo": true, "meta": true, "bing": true},
-  // bing=HasData Bing SERP API でリスティング広告収集。Googleと同じhasdataキーを使用。
-  // 二重課金回避のため yahoo(primary)スレッドのみ実行。yahoo2では走らない。
+  // bing=Bingリスティング広告収集。Playwright直接スクレイピング（無料・bot検知が緩い）。
+  // yahooワーカーの同一ブラウザで収集。primary(yahoo)スレッドのみ実行（yahoo2では走らない）。
+  // ※HasData Bing SERP API版も serp_api_scraper.py に休眠状態で残置（クレジット契約時に切替可）。
   "timing": {"min_delay_seconds": 60, "max_delay_seconds": 300}
 }
 ```
