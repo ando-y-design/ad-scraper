@@ -153,6 +153,17 @@ def scrape_bing(page: Page, keyword: str, area: Optional[dict] = None, heartbeat
             if lp and lp not in seen:
                 seen.add(lp)
                 urls.append(lp)
+        elif 'yahoo.co.jp' in href or 'yahoo.com' in href:
+            # Bing日本版はYahoo広告のリダイレクトURLを配信することがある。
+            # そのまま保存すると base_url=yahoo.co.jp になり重複判定が全Bing件で
+            # 衝突する（1件目以降スキップ＋ソース混入）ため、LP抽出できた場合のみ採用。
+            from scrapers.yahoo_scraper import _extract_lp_from_yahoo_url
+            lp = _extract_lp_from_yahoo_url(href)
+            if lp and lp not in seen:
+                seen.add(lp)
+                urls.append(lp)
+            elif not lp:
+                logging.debug(f'[Bing] Yahooリダイレクト解決不能 → スキップ: {href[:80]}')
         elif href.startswith('http') and 'bing.com' not in href and 'microsoft.com' not in href \
                 and 'msn.com' not in href and 'go.microsoft' not in href:
             # 広告主への直リンク（コンテナ内アンカー）。検索結果の通常リンクも混じり得るが

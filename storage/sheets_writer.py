@@ -21,11 +21,13 @@ SCOPES = [
     'https://www.googleapis.com/auth/drive',
 ]
 
+# チーム共有「リスト」シートの実レイアウト（14列・A列=法人番号）。
+# 変更時はシート実物と必ず突合すること。コード側だけ変えると列ズレ書き込みになり、
+# 担当名・話した内容など架電チームの手動入力列を汚染する（2026-06-10に発生・修復済み）。
 HEADERS = [
-    'リスト持主', 'CRM', 'キーワード', '広告ソース', '取得日時', 'ランク',
-    '会社名', 'LP URL', '電話番号', '法人番号', '業界', '複数電話',
-    'LPキャッチ', 'エリア', '競合',
-    '担当名', '話した内容', '前回', '架電結果', '次回',
+    '法人番号', 'CRM', 'キーワード', '広告ソース', '取得日時', 'ランク',
+    '会社名', 'LP URL', '電話番号', '担当名', '話した内容', '前回',
+    '架電結果', '次回',
 ]
 
 
@@ -165,7 +167,7 @@ class SheetsWriter:
         [(normalized_name, sheet_row), ...] を返す。それ以外はNone。
         """
         row = [
-            '',                                  # リスト持主（手動）
+            data.get('corporate_number') or '',  # 法人番号
             '',                                  # CRM（手動）
             data.get('keyword') or '',           # キーワード
             data.get('ad_sources') or '',        # 広告ソース
@@ -174,13 +176,7 @@ class SheetsWriter:
             _half(data.get('company_name') or ''), # 会社名（全角英数→半角）
             data.get('lp_url') or '',            # LP URL
             data.get('phone') or '',             # 電話番号
-            data.get('corporate_number') or '',  # 法人番号
-            data.get('industry') or '',          # 業界
-            data.get('phones') or '',            # 複数電話
-            data.get('lp_headline') or '',       # LPキャッチ
-            data.get('area_name') or '',         # エリア
-            data.get('competitors') or '',       # 競合
-            '',                                  # 担当名（手動）
+            data.get('contact_name') or '',      # 担当名（架電チームが上書き可）
             '',                                  # 話した内容（手動）
             '',                                  # 前回（手動）
             '',                                  # 架電結果（手動）

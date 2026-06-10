@@ -141,6 +141,23 @@ def writer_worker():
             continue
 
         try:
+            # rank_updateイベント: 既存行のランクのみ更新（新媒体追加でランク昇格時）
+            if data.get('_type') == 'rank_update':
+                sheet_row = data.get('sheet_row')
+                if writer and sheet_row:
+                    try:
+                        writer.worksheet.update(
+                            values=[[data.get('rank', '')]],
+                            range_name=f'F{sheet_row}', raw=True,
+                        )
+                        logging.info(
+                            f'[Writer] ランク更新: 行{sheet_row} → {data.get("rank")} '
+                            f'({data.get("normalized_name", "")})'
+                        )
+                    except Exception as e:
+                        logging.warning(f'[Writer] ランク更新失敗（スキップ）: {e}')
+                continue
+
             inserted = insert_company(conn, data)
             if not inserted:
                 # 重複: seen_count と rank を更新してDBに反映
