@@ -112,56 +112,69 @@ def scrape_bing(page: Page, keyword: str, area: Optional[dict] = None, heartbeat
         _save_snapshot(page, keyword, 'captcha')
         return []
 
-    time.sleep(random.uniform(1.0, 2.2))
+    # 広告は遅延描画されることがあるため、広告コンテナの出現を最大6秒待つ
+    try:
+        page.wait_for_selector('li.b_ad, .b_ad, .sb_add, .b_adLastChild', timeout=6000)
+    except PlaywrightTimeoutError:
+        pass  # 広告なしも正常。後続のJS抽出で最終判定する
+    time.sleep(random.uniform(0.8, 1.8))
     _hb()
 
-    # 戦略1: セレクタで aclick リンクを直接抽出（クリック不要・高速）
+    # 広告コンテナ内の全アンカーをJSで収集する。
+    # Bingの広告リンクは (a) /aclick・/aclk トラッキングURL、(b) 広告主への直URL、
+    # の両形態がありレイアウトで変わるため、両方を拾って後段で振り分ける。
     seen: set[str] = set()
-    for selector in AD_LINK_SELECTORS:
+    try:
+        ad_hrefs = page.evaluate("""() => {
+            const out = [];
+            const push = (h) => { if (h && h.startsWith('http') && !out.includes(h)) out.push(h); };
+            // 広告コンテナ（クラス名に b_ad / sb_add を含む要素）配下のリンク
+            const containers = document.querySelectorAll(
+                'li.b_ad, .b_adTop, .b_adBottom, .b_adLastChild, .sb_add, [class*="b_ad"], aside[aria-label]'
+            );
+            for (const c of containers) {
+                for (const a of c.querySelectorAll('a[href]')) push(a.href || '');
+            }
+            // ページ全体の /aclick・/aclk リンクも拾う（コンテナ外の広告対策）
+            for (const a of document.querySelectorAll('a[href*="/aclick"], a[href*="/aclk"]')) {
+                push(a.href || '');
+            }
+            return out.slice(0, 40);
+        }""") or []
+    except Exception as e:
+        logging.debug(f'Bing リンク収集エラー: {e}')
+        ad_hrefs = []
+
+    for href in ad_hrefs:
+        if '/aclick' in href or '/aclk' in href:
+            lp = _extract_lp_from_bing_aclick(href)
+            if lp and lp not in seen:
+                seen.add(lp)
+                urls.append(lp)
+        elif href.startswith('http') and 'bing.com' not in href and 'microsoft.com' not in href \
+                and 'msn.com' not in href and 'go.microsoft' not in href:
+            # 広告主への直リンク（コンテナ内アンカー）。検索結果の通常リンクも混じり得るが
+            # 広告コンテナ配下のみ収集しているため広告とみなす。
+            if href not in seen:
+                seen.add(href)
+                urls.append(href)
+
+    if not urls:
+        # 0件時はライブDOM構造を診断ログに残す（ヘッドレス実DOMでセレクタを調整するため）
         try:
-            elements = page.query_selector_all(selector)
-            if not elements:
-                continue
-            for elem in elements[:8]:
-                href = elem.get_attribute('href') or ''
-                if '/aclick' in href:
-                    lp = _extract_lp_from_bing_aclick(href)
-                    if lp and lp not in seen:
-                        seen.add(lp)
-                        urls.append(lp)
-                        logging.debug(f'Bing LP(直接抽出): {lp}')
-                elif href.startswith('http') and 'bing.com' not in href:
-                    if href not in seen:
-                        seen.add(href)
-                        urls.append(href)
-                        logging.debug(f'Bing LP(direct): {href}')
-            if urls:
-                break
+            diag = page.evaluate("""() => {
+                const adC = document.querySelectorAll('li.b_ad, .sb_add, .b_adLastChild').length;
+                const sample = Array.from(
+                    document.querySelectorAll('li.b_ad a[href], .sb_add a[href], [class*="b_ad"] a[href]')
+                ).map(a => a.href).filter(h => h && h.startsWith('http')).slice(0, 5);
+                const adClasses = [...new Set(
+                    Array.from(document.querySelectorAll('[class*="b_ad"]')).map(e => String(e.className))
+                )].slice(0, 8);
+                return JSON.stringify({adC, sample, adClasses});
+            }""")
+            logging.info(f'[Bing] 0件診断: {diag} / "{keyword}"')
         except Exception:
-            continue
-
-    # 戦略2: JS fallback — 全リンクから aclick を拾って u= をデコード
-    if not urls:
-        try:
-            ad_hrefs = page.evaluate("""() => {
-                const out = [];
-                for (const a of document.querySelectorAll('a[href]')) {
-                    const h = a.href || '';
-                    if (h.includes('/aclick')) out.push(h);
-                }
-                return out.slice(0, 12);
-            }""") or []
-            for href in ad_hrefs:
-                lp = _extract_lp_from_bing_aclick(href)
-                if lp and lp not in seen:
-                    seen.add(lp)
-                    urls.append(lp)
-            if urls:
-                logging.info(f'Bing広告 JS fallback {len(urls)}件発見: "{keyword}"')
-        except Exception as e:
-            logging.debug(f'Bing JS fallback エラー: {e}')
-
-    if not urls:
+            pass
         _save_snapshot(page, keyword, 'zero_ads')
         logging.info(f'Bing広告 0件: "{keyword}" — スナップショット保存済み')
         return []
