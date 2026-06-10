@@ -121,7 +121,7 @@ watchdog → repair_worker → 問題検知 → pending_fixes.jsonlに記録
   "nta_api_key": "",
   "keywords": [...],
   "auto_code_repair": false,
-  "phone_strategy": "sme",
+  "phone_strategy": "direct",   // direct=直通/代表番号優先(架電到達率最大) / sme / enterprise
   "sources": {"google": true, "yahoo": true, "meta": true},
   "timing": {"min_delay_seconds": 60, "max_delay_seconds": 300}
 }

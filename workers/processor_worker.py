@@ -154,11 +154,12 @@ def _process_one_lp(item: dict, conn=None) -> Optional[dict]:
         logging.debug(f'[Processor] 会社名/電話番号取得失敗: {lp_url}')
         return None
 
-    # フリーダイヤル（0120/0800/0570/0990）のみの場合はスキップ
+    # フリーダイヤル（0120/0800/0570/0990）でも捨てない（架電リストとして有効）。
+    # 直通/代表番号は company_finder 側で既に優先採用済み。ここではフリーダイヤルしか
+    # 取れなかったケースも残す（オーナー方針: 2026-06-10）。
     from processors.phone_finder import is_freephone
     if is_freephone(phone):
-        logging.debug(f'[Processor] フリーダイヤルのみのためスキップ: {phone} / {lp_url}')
-        return None
+        logging.debug(f'[Processor] フリーダイヤルのみだが採用: {phone} / {lp_url}')
 
     normalized = normalize_company(company_name)
 

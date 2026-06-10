@@ -61,6 +61,6 @@
   "drive_share_emails": [],
   "ngrok": {"enabled": false, "authtoken": "", "domain": ""},
   "auto_code_repair": false,
-  "phone_strategy": "enterprise",
+  "phone_strategy": "direct",
   "meta_api": {"enabled": false, "app_id": "", "app_secret": ""}
 }

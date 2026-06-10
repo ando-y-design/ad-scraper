@@ -27,18 +27,27 @@ _PRIORITY_PREFIXES = [
 _PRIORITY_SME = ['mobile', 'landline_tokyo', 'landline', 'ip', 'landline_11', 'toll_free']
 # Enterprise（中堅・大手）: 固定→IP→携帯→フリーダイヤル（組織攻略）
 _PRIORITY_ENTERPRISE = ['landline_tokyo', 'landline', 'ip', 'mobile', 'landline_11', 'toll_free']
+# Direct（直通/代表番号優先・架電到達率最大化）:
+#   代表電話=固定(03/06→一般→11桁) を最優先 → 直通携帯 → IP(050) → フリーダイヤルは最後だが残す
+#   「電話をかけたら確実にその会社に繋がる」ことを最重視した順序
+_PRIORITY_DIRECT = ['landline_tokyo', 'landline', 'landline_11', 'mobile', 'ip', 'toll_free']
 
-_strategy: str = 'sme'
+_VALID_STRATEGIES = ('sme', 'enterprise', 'direct')
+_strategy: str = 'direct'
 
 
 def set_phone_strategy(strategy: str) -> None:
-    """main.pyの起動時に呼ぶ。'sme' or 'enterprise'"""
+    """main.pyの起動時に呼ぶ。'sme' / 'enterprise' / 'direct'"""
     global _strategy
-    _strategy = strategy if strategy in ('sme', 'enterprise') else 'sme'
+    _strategy = strategy if strategy in _VALID_STRATEGIES else 'direct'
 
 
 def get_priority_order() -> list[str]:
-    return _PRIORITY_ENTERPRISE if _strategy == 'enterprise' else _PRIORITY_SME
+    if _strategy == 'enterprise':
+        return _PRIORITY_ENTERPRISE
+    if _strategy == 'sme':
+        return _PRIORITY_SME
+    return _PRIORITY_DIRECT
 
 
 def is_freephone(phone: str) -> bool:

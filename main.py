@@ -258,7 +258,7 @@ def main():
     setup_logging()
     loaded = load_config()
     config.update(loaded)
-    set_phone_strategy(config.get('phone_strategy', 'sme'))
+    set_phone_strategy(config.get('phone_strategy', 'direct'))
 
     if args.setup:
         run_setup()
