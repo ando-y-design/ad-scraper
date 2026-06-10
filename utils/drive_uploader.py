@@ -1,4 +1,5 @@
 from __future__ import annotations
+from typing import Optional
 # -*- coding: utf-8 -*-
 import json
 import logging
@@ -18,7 +19,7 @@ def _get_drive_service(creds_path: str):
     return build('drive', 'v3', credentials=creds)
 
 
-def upload_status_html(creds_path: str, html_path: str, share_emails: list[str] | None = None) -> str | None:
+def upload_status_html(creds_path: str, html_path: str, share_emails: Optional[list[str]] = None) -> Optional[str]:
     """
     status.html を Google Drive にアップロードして公開URLを返す。
     初回はファイルを新規作成してIDを保存、2回目以降は同じIDに上書きする。
@@ -78,7 +79,7 @@ def upload_status_html(creds_path: str, html_path: str, share_emails: list[str] 
         return None
 
 
-def _load_file_id() -> str | None:
+def _load_file_id() -> Optional[str]:
     try:
         if _STATE_FILE.exists():
             return _STATE_FILE.read_text().strip()

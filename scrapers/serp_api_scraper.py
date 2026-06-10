@@ -1,4 +1,5 @@
 from __future__ import annotations
+from typing import Optional
 import base64
 import json
 import logging
@@ -138,7 +139,7 @@ def _load_config_keys() -> list[dict]:
         return []
 
 
-def scrape_google_via_api(keyword: str, location: str | None = None) -> list[str] | None:
+def scrape_google_via_api(keyword: str, location: Optional[str] = None) -> Optional[list[str]]:
     """
     SERP APIを使ってGoogle広告LPを取得する。
     複数キーをラウンドロビンでローテーション。
@@ -247,7 +248,7 @@ def scrape_google_via_api(keyword: str, location: str | None = None) -> list[str
     return None
 
 
-def _scrape_dataforseo(key: str, keyword: str, location: str | None) -> list[str] | None:
+def _scrape_dataforseo(key: str, keyword: str, location: Optional[str]) -> Optional[list[str]]:
     """
     DataForSEO Google Paid Ads エンドポイント。
     key フォーマット: "login:password"（コロン区切り）
@@ -315,7 +316,7 @@ def _scrape_dataforseo(key: str, keyword: str, location: str | None) -> list[str
         return None
 
 
-def _scrape_hasdata(key: str, keyword: str, location: str | None) -> list[str] | None:
+def _scrape_hasdata(key: str, keyword: str, location: Optional[str]) -> Optional[list[str]]:
     """
     HasData Google SERP API（x-api-key ヘッダー認証）。
     HasDataのJSONパーサーは広告抽出が不安定なため、
@@ -428,7 +429,7 @@ def _scrape_hasdata(key: str, keyword: str, location: str | None) -> list[str] |
         return None
 
 
-def _extract_lp_from_aclk(href: str) -> str | None:
+def _extract_lp_from_aclk(href: str) -> Optional[str]:
     """Google /aclk トラッキングURLからランディングページURLを抽出する（HasData用）"""
     try:
         from urllib.parse import parse_qs, unquote, urlparse

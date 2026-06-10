@@ -11,8 +11,8 @@ from storage.database import get_connection
 from utils.browser import create_browser_context, new_stealth_page
 from utils.keywords import (
     auto_refill_if_low,
-    get_next_keyword_with_area,
-    update_keyword_area_searched,
+    get_next_keyword,
+    update_keyword_searched,
 )
 from self_repair.diagnostics import get_diagnostics
 
@@ -110,12 +110,10 @@ def meta_worker():
                         processed = False
                         auto_refill_if_low(conn, 'meta', cooling_hours=meta_cooling, threshold=15, batch_size=40)
 
-                        kw_info = get_next_keyword_with_area(conn, 'meta', meta_cooling, areas, boost_patterns=boost)
+                        kw_info = get_next_keyword(conn, 'meta', meta_cooling, boost_patterns=boost)
                         if kw_info:
                             keyword = kw_info['keyword']
-                            area = kw_info.get('area')
-                            area_name = area['name'] if area else None
-                            search_query = f'{keyword} {area_name}' if area_name else keyword
+                            search_query = keyword
                             logging.info(f'[Meta] キーワード: "{search_query}"')
                             try:
                                 # Meta API（公式）を優先 → 失敗時はPlaywrightにフォールバック
@@ -130,7 +128,7 @@ def meta_worker():
                                         ad_url = ad_item['url'] if isinstance(ad_item, dict) else ad_item
                                         ad_pname = ad_item.get('page_name') if isinstance(ad_item, dict) else None
                                         _enqueue_lp(ad_url, 'Meta', search_query, ad_pname)
-                                    update_keyword_area_searched(conn, keyword, area_name)
+                                    update_keyword_searched(conn, keyword)
                                     processed = True
                                     keyword_count += 1
                                     delay = random.uniform(min_delay, max_delay)
@@ -180,7 +178,7 @@ def meta_worker():
                                     logging.error(f'[Meta] エラー: {e}')
                             beat('meta')
 
-                            update_keyword_area_searched(conn, keyword, area_name)
+                            update_keyword_searched(conn, keyword)
                             processed = True
                             keyword_count += 1
 

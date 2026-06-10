@@ -79,7 +79,7 @@ def _core_name(company_name: str) -> str:
     return name[:6]  # 先頭6文字で照合
 
 
-def search_itp(company_name: str, session: requests.Session | None = None) -> str:
+def search_itp(company_name: str, session: requests.Optional[Session] = None) -> str:
     """
     iタウンページで会社名検索 → 固定電話を返す。
     結果が複数ある場合は会社名が最も近いエントリを優先する。
@@ -121,7 +121,7 @@ def search_itp(company_name: str, session: requests.Session | None = None) -> st
     return ""
 
 
-def search_indeed(company_name: str, session: requests.Session | None = None) -> str:
+def search_indeed(company_name: str, session: requests.Optional[Session] = None) -> str:
     """
     Indeed 企業ページで会社名検索 → 会社情報欄の固定電話を返す。
     """
@@ -154,7 +154,7 @@ def search_indeed(company_name: str, session: requests.Session | None = None) ->
 
 def find_phone_from_directory(
     company_name: str,
-    session: requests.Session | None = None,
+    session: requests.Optional[Session] = None,
 ) -> str:
     """
     固定電話を電話帳・求人サイトで補完検索する。

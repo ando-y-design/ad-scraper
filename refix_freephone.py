@@ -1,4 +1,5 @@
 from __future__ import annotations
+from typing import Optional
 """
 refix_freephone.py — フリーダイヤルのレコードを再スクレイプして固定電話に差し替える
 
@@ -28,7 +29,7 @@ def is_freephone(phone: str) -> bool:
     return re.sub(r"\D", "", phone).startswith(_FREEPHONE)
 
 
-def fetch(url: str, session: requests.Session) -> str | None:
+def fetch(url: str, session: requests.Session) -> Optional[str]:
     try:
         r = session.get(url, headers=_HEADERS, timeout=15, allow_redirects=True)
         r.encoding = r.apparent_encoding or "utf-8"

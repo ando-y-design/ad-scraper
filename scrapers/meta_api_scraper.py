@@ -1,4 +1,5 @@
 from __future__ import annotations
+from typing import Optional
 # -*- coding: utf-8 -*-
 """
 Facebook Ad Library API スクレイパー
@@ -74,7 +75,7 @@ def _set_failed_cache() -> None:
     logging.info(f'[MetaAPI] 失敗キャッシュ: {_ALL_FAILED_SKIP_SECONDS//60}分間スキップ')
 
 
-def _load_config() -> dict | None:
+def _load_config() -> Optional[dict]:
     """config.jsonからmeta_api設定を読む"""
     try:
         cfg_path = BASE_DIR / 'config.json'
@@ -120,12 +121,12 @@ def _get_blocked_domains() -> list[str]:
         return _BLOCKED_DOMAINS_CACHE
 
 
-def scrape_meta_via_api(keyword: str) -> list[dict] | None:
+def scrape_meta_via_api(keyword: str) -> Optional[list[dict]]:
     """
     Facebook Ad Library APIでキーワード検索し、広告主のLP URLとpage_nameを返す。
 
     Returns:
-        list[dict]: {'url': str, 'page_name': str|None} のリスト（0件の場合も空リストを返す）
+        list[dict]: {'url': str, 'page_name': Optional[str]} のリスト（0件の場合も空リストを返す）
         None: API未設定またはスキップ中
     """
     cfg = _load_config()
@@ -187,7 +188,7 @@ def scrape_meta_via_api(keyword: str) -> list[dict] | None:
             return None
 
         ads = data.get('data', [])
-        raw_items: list[tuple[str, str | None]] = []  # (url, page_name)
+        raw_items: list[tuple[str, Optional[str]]] = []  # (url, page_name)
 
         for ad in ads:
             page_name = ad.get('page_name') or None

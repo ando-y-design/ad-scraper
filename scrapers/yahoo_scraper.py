@@ -1,4 +1,5 @@
 from __future__ import annotations
+from typing import Optional
 import logging
 import random
 import time
@@ -26,7 +27,7 @@ AD_LINK_SELECTORS = [
 ]
 
 
-def _extract_lp_from_yahoo_url(href: str) -> str | None:
+def _extract_lp_from_yahoo_url(href: str) -> Optional[str]:
     """Yahoo広告トラッキングURLからランディングページURLを直接抽出する（クリック不要）"""
     try:
         parsed = urlparse(href)
@@ -84,7 +85,7 @@ def _save_snapshot(page: Page, keyword: str, reason: str = '') -> None:
         logging.debug(f'[Yahoo] スナップショット保存失敗: {e}')
 
 
-def scrape_yahoo(page: Page, keyword: str, area: dict | None = None, heartbeat=None) -> list[str]:
+def scrape_yahoo(page: Page, keyword: str, area: Optional[dict] = None, heartbeat=None) -> list[str]:
     """
     heartbeat: 呼び出し元スレッドのハートビートコールバック（省略可）。
     長時間ブロックする操作の前後に呼んでWatchdogの誤検知を防ぐ。
@@ -102,32 +103,36 @@ def scrape_yahoo(page: Page, keyword: str, area: dict | None = None, heartbeat=N
     if area:
         search_url += f'&rkf=1&b={quote(area["name"])}'
 
-    try:
-        page.goto(
-            search_url,
-            timeout=20000, wait_until='domcontentloaded'
-        )
-        _hb()
-        # Yahoo uses Next.js — wait for JS hydration so ad elements appear in DOM
-        # tmual is loaded async, so network may not fully idle; use longer timeout
+    for _attempt in range(2):
         try:
-            page.wait_for_load_state('networkidle', timeout=12000)
+            page.goto(
+                search_url,
+                timeout=35000, wait_until='domcontentloaded'
+            )
+            _hb()
+            try:
+                page.wait_for_load_state('networkidle', timeout=15000)
+            except PlaywrightTimeoutError:
+                pass  # non-fatal; continue with whatever is rendered
+            _hb()
+            break
         except PlaywrightTimeoutError:
-            pass  # non-fatal; continue with whatever is rendered
-        _hb()
-    except PlaywrightTimeoutError:
-        logging.warning(f'Yahoo検索タイムアウト "{keyword}"')
-        _hb()
-        return []
-    except Exception as e:
-        _hb()
-        err_lower = str(e).lower()
-        if any(k in err_lower for k in ('target closed', 'context or browser has been closed',
-                                         'connection reset', 'browser closed', 'crash')):
-            logging.warning(f'Yahoo検索失敗(ページクラッシュ) "{keyword}": {e}')
-            raise  # 呼び出し元でページ再作成させる
-        logging.warning(f'Yahoo検索失敗 "{keyword}": {e}')
-        return []
+            if _attempt == 0:
+                logging.warning(f'Yahoo検索タイムアウト "{keyword}" → リトライ')
+                time.sleep(3)
+                continue
+            logging.warning(f'Yahoo検索タイムアウト "{keyword}" (2回失敗)')
+            _hb()
+            return []
+        except Exception as e:
+            _hb()
+            err_lower = str(e).lower()
+            if any(k in err_lower for k in ('target closed', 'context or browser has been closed',
+                                             'connection reset', 'browser closed', 'crash')):
+                logging.warning(f'Yahoo検索失敗(ページクラッシュ) "{keyword}": {e}')
+                raise
+            logging.warning(f'Yahoo検索失敗 "{keyword}": {e}')
+            return []
 
     # URL + ページコンテンツ両方でCAPTCHA検出
     _is_yahoo_captcha = 'captcha' in page.url.lower()

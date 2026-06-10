@@ -1,6 +1,7 @@
 #!/usr/bin/env python3
 """既存Sheetsの会社名（H列）からNTA APIで法人番号を取得してA列に書き込む。"""
 from __future__ import annotations
+from typing import Optional
 import json
 import sys
 import time
@@ -27,7 +28,7 @@ SCOPES = [
 # どちらの場合も会社名列とA列を動的に検出する
 
 
-def get_col_index(headers: list[str], name: str) -> int | None:
+def get_col_index(headers: list[str], name: str) -> Optional[int]:
     try:
         return headers.index(name)
     except ValueError:

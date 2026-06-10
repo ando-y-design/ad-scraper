@@ -1,4 +1,5 @@
 from __future__ import annotations
+from typing import Optional
 import json
 import logging
 import random
@@ -171,7 +172,7 @@ def _try_launch(playwright, profile_dir: Path, headless: bool = False):
     )
 
 
-def create_browser_context(playwright, profile_dir: Path | None = None):
+def create_browser_context(playwright, profile_dir: Optional[Path] = None):
     """
     Chrome を起動して Playwright コンテキストを返す。
     profile_dir を指定すると別プロファイルで起動できる（並列ワーカー用）。

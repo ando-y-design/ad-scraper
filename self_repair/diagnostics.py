@@ -323,7 +323,7 @@ class Diagnostics:
 
 
 # シングルトン
-_instance: Diagnostics | None = None
+_instance: Optional[Diagnostics] = None
 
 
 def get_diagnostics() -> Diagnostics:

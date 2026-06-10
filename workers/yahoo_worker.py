@@ -1,4 +1,5 @@
 from __future__ import annotations
+from typing import Optional
 """Yahoo/Google 広告収集ワーカー"""
 import logging
 import queue
@@ -30,8 +31,8 @@ def _get_boost_patterns() -> list[str]:
     return config.get('priority_keywords', [])
 
 
-def _enqueue_lp(url: str, source: str, keyword: str, meta_company: str | None = None,
-                area_name: str | None = None, serp_phone: str | None = None):
+def _enqueue_lp(url: str, source: str, keyword: str, meta_company: Optional[str] = None,
+                area_name: Optional[str] = None, serp_phone: Optional[str] = None):
     try:
         lp_queue.put(
             {'lp_url': url, 'source': source, 'keyword': keyword,
@@ -43,7 +44,7 @@ def _enqueue_lp(url: str, source: str, keyword: str, meta_company: str | None = 
         logging.debug(f'lp_queueが満杯。スキップ: {url}')
 
 
-def _interruptible_sleep(seconds: float, beat_name: str | None = None):
+def _interruptible_sleep(seconds: float, beat_name: Optional[str] = None):
     end = time.time() + seconds
     last_beat = time.time()
     while time.time() < end and not shutdown_event.is_set():
