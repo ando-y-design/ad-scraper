@@ -71,7 +71,10 @@ def init_db() -> sqlite3.Connection:
             area_name        TEXT,
             corporate_number TEXT,
             seen_count       INTEGER DEFAULT 1,
-            rank             TEXT
+            rank             TEXT,
+            nta_prefecture   TEXT,
+            pref_match       TEXT,
+            phone_confidence INTEGER
         );
 
         CREATE TABLE IF NOT EXISTS keywords (
@@ -109,6 +112,8 @@ def init_db() -> sqlite3.Connection:
         ('all_keywords', 'TEXT'), ('area_name', 'TEXT'),
         ('corporate_number', 'TEXT'), ('phone_source', 'TEXT'),
         ('seen_count', 'INTEGER DEFAULT 1'), ('rank', 'TEXT'),
+        ('nta_prefecture', 'TEXT'), ('pref_match', 'TEXT'),
+        ('phone_confidence', 'INTEGER'), ('nta_retry_count', 'INTEGER DEFAULT 0'),
     ]:
         if col not in existing_cols:
             conn.execute(f'ALTER TABLE companies ADD COLUMN {col} {typedef}')
@@ -249,8 +254,9 @@ def insert_company(conn: sqlite3.Connection, data: dict) -> bool:
             INSERT OR IGNORE INTO companies
               (company_name, normalized_name, lp_url, base_url, phone, phones,
                phone_source, ad_sources, found_date, keyword, exported,
-               contact_name, lp_headline, all_keywords, area_name, corporate_number)
-            VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, 0, ?, ?, ?, ?, ?)
+               contact_name, lp_headline, all_keywords, area_name, corporate_number,
+               nta_prefecture, pref_match, phone_confidence)
+            VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, 0, ?, ?, ?, ?, ?, ?, ?, ?)
             ''',
             (
                 data['company_name'], data['normalized_name'],
@@ -264,6 +270,9 @@ def insert_company(conn: sqlite3.Connection, data: dict) -> bool:
                 kw,
                 data.get('area_name'),
                 data.get('corporate_number'),
+                data.get('nta_prefecture', ''),
+                data.get('pref_match', ''),
+                data.get('phone_confidence'),
             )
         )
         conn.commit()
@@ -356,8 +365,15 @@ def get_competitors(
 
 
 def get_unexported(conn: sqlite3.Connection) -> list[sqlite3.Row]:
+    # 法人番号が確定したレコードのみ再送対象にする。
+    # writerの新規書き込みはNTA未マッチをスキップするため、再送経路でも同じ
+    # 基準を適用しないと未確定レコードがSheetsに漏れる（Sheetsは整合データのみ）。
+    # 未確定分は nta_retry_worker が法人番号を回収した時点で自動的に対象になる。
     return conn.execute(
-        'SELECT * FROM companies WHERE exported = 0 ORDER BY id'
+        '''SELECT * FROM companies
+           WHERE exported = 0
+             AND corporate_number IS NOT NULL AND corporate_number != ''
+           ORDER BY id'''
     ).fetchall()
 
 

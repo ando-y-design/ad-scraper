@@ -33,6 +33,7 @@ from workers.meta_worker import meta_worker
 from workers.processor_worker import processor_worker
 from workers.writer_worker import writer_worker
 from workers.watchdog_worker import watchdog_worker
+from workers.nta_retry_worker import nta_retry_worker
 
 CONFIG_PATH = BASE_DIR / 'config.json'
 CONTROL_PATH = BASE_DIR / 'control.json'
@@ -231,6 +232,7 @@ _THREAD_TARGETS = {
     'meta': meta_worker,
     'processor': processor_worker,
     'writer': writer_worker,
+    'nta_retry': nta_retry_worker,
 }
 
 
@@ -303,7 +305,7 @@ def main():
     # ワーカースレッド起動
     # yahoo/yahoo2/meta は並列動作（それぞれ独立ブラウザ）
     # Chrome同時起動によるリソース競合を防ぐため10秒ずつずらす
-    for name in ['writer', 'processor']:
+    for name in ['writer', 'processor', 'nta_retry']:
         _start_thread(name)
     _start_thread('yahoo')
     time.sleep(10)

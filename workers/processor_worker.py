@@ -214,6 +214,21 @@ def _process_one_lp(item: dict, conn=None) -> Optional[dict]:
     from processors.rank_calculator import calc_rank
     rank = calc_rank(1, source)
 
+    # NTA登記都道府県 × 市外局番の整合チェック（架電可能性の検証）
+    # mismatch（遠隔地）は取り違えの可能性があるためランクを1段階降格する
+    from processors.legal_name_resolver import get_prefecture
+    from processors.quality import calc_phone_confidence, demote_rank
+    from utils.area_codes import pref_match_level
+    nta_prefecture = get_prefecture(corporate_number)
+    pref_match = pref_match_level(nta_prefecture, phone)
+    phone_confidence = calc_phone_confidence(phone_source, pref_match)
+    if pref_match == 'mismatch':
+        old_rank = rank
+        rank = demote_rank(rank)
+        logging.info(
+            f'[Processor] 登記住所と電話地域の不一致 ({nta_prefecture} vs {phone}) '
+            f'→ ランク降格 {old_rank}→{rank}: {company_name}'
+        )
 
     return {
         'company_name': company_name.strip(),
@@ -234,6 +249,9 @@ def _process_one_lp(item: dict, conn=None) -> Optional[dict]:
         'rank': rank,
         'corporate_number': corporate_number,
         'nta_errored': nta_errored,
+        'nta_prefecture': nta_prefecture,
+        'pref_match': pref_match,
+        'phone_confidence': phone_confidence,
     }
 
 

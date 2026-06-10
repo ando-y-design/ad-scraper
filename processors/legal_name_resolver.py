@@ -119,6 +119,17 @@ _corp_num_cache: dict[str, Optional[str]] = {}
 # 400エラーが返ったコア名はセッション内でスキップ（同一名の繰り返しリクエスト防止）
 _nta_400_skip: set[str] = set()
 
+# 法人番号 → 登記都道府県（NTA応答のprefectureName）。
+# 市外局番との整合チェック（utils/area_codes.pref_match_level）に使う。
+_pref_by_corpnum: dict[str, str] = {}
+
+
+def get_prefecture(corp_number: str) -> str:
+    """直近のNTA照会で得た登記都道府県を返す（未取得は空文字）。"""
+    if not corp_number:
+        return ''
+    return _pref_by_corpnum.get(corp_number, '')
+
 # API キー未設定の警告を 1 回だけ出す
 _warned_no_key = False
 
@@ -321,11 +332,12 @@ def _query_nta(core_name: str, api_key: str, original_name: str = '') -> tuple[O
 
         root = ET.fromstring(resp.content)
 
-        # 日本語法人格を含む候補だけを収集 (name, corporateNumber)
-        candidates: list[tuple[str, str]] = []
+        # 日本語法人格を含む候補だけを収集 (name, corporateNumber, prefecture)
+        candidates: list[tuple[str, str, str]] = []
         for corp in root.findall('.//corporation'):
             name_elem = corp.find('name')
             number_elem = corp.find('corporateNumber')
+            pref_elem = corp.find('prefectureName')
             if name_elem is not None and name_elem.text:
                 corp_name = name_elem.text.strip()
                 if corp_name and _JP_LEGAL_RE.search(corp_name):
@@ -334,18 +346,26 @@ def _query_nta(core_name: str, api_key: str, original_name: str = '') -> tuple[O
                         if number_elem is not None and number_elem.text
                         else ''
                     )
-                    candidates.append((corp_name, corp_number))
+                    prefecture = (
+                        pref_elem.text.strip()
+                        if pref_elem is not None and pref_elem.text
+                        else ''
+                    )
+                    candidates.append((corp_name, corp_number, prefecture))
 
         if not candidates:
             return None, None
         if len(candidates) == 1:
-            return candidates[0]
+            best = candidates[0]
+        else:
+            # 複数ヒット: コア名との文字一致スコアで最良候補を選ぶ
+            names = [c[0] for c in candidates]
+            best_name = _best_match(core_name, names, original_name=original_name)
+            best = candidates[names.index(best_name)]
 
-        # 複数ヒット: コア名との文字一致スコアで最良候補を選ぶ
-        names = [c[0] for c in candidates]
-        best_name = _best_match(core_name, names, original_name=original_name)
-        best_idx = names.index(best_name)
-        return candidates[best_idx]
+        if best[1] and best[2]:
+            _pref_by_corpnum[best[1]] = best[2]
+        return best[0], best[1]
 
     except ET.ParseError as e:
         logging.warning(f'[NTA] XML parse error "{core_name}": {e}')

@@ -106,6 +106,9 @@ def writer_worker():
     # 止まってしまうため、未接続時は一定間隔で再接続を試みる。
     _RECONNECT_INTERVAL = 120
     _last_reconnect_try = time.time()
+    # nta_retry_worker が法人番号を回収した未送信レコードを定期的にSheetsへ流す
+    _RESEND_INTERVAL = 3600
+    _last_resend = time.time()
 
     while not shutdown_event.is_set():
         beat('writer')
@@ -119,6 +122,14 @@ def writer_worker():
                 _resend_unexported(writer)
             except Exception as e:
                 logging.warning(f'[Writer] Google Sheets再接続失敗（{_RECONNECT_INTERVAL}s後に再試行）: {e}')
+
+        # 1時間ごとに未送信分を再送（NTAリトライで法人番号が確定した分の回収）
+        if writer is not None and (time.time() - _last_resend) >= _RESEND_INTERVAL:
+            _last_resend = time.time()
+            try:
+                _resend_unexported(writer)
+            except Exception as e:
+                logging.warning(f'[Writer] 定期再送失敗（次回再試行）: {e}')
 
         try:
             data = result_queue.get(timeout=5)
