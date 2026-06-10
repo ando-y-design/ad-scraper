@@ -9,7 +9,7 @@ from processors.rank_calculator import calc_rank
 from storage.database import (
     get_connection, get_unexported, insert_company, mark_exported,
 )
-from storage.sheets_writer import SheetsWriter, get_sheets_client, get_worksheet
+from storage.sheets_writer import SheetsWriter, get_sheets_client, get_worksheet, _half
 from utils.keyword_expander import maybe_expand_keyword
 from utils.keywords import update_keyword_found
 
@@ -64,12 +64,40 @@ def writer_worker():
         return w
 
     def _resend_unexported(w: SheetsWriter) -> None:
-        """DBにあるがSheets未反映の行を再送する（起動時・再接続時に呼ぶ）。"""
+        """DBにあるがSheets未反映の行を再送する（起動時・再接続時・定期）。
+
+        exportedフラグはズレることがある（マーク失敗・手動操作等）ため、
+        シート実データ（G列会社名×I列電話番号）と突合し、既に載っている行は
+        再送せずexported=1に修復する。重複追記の防止が目的。"""
         unexported = get_unexported(conn)
         if not unexported:
             return
-        logging.info(f'[Writer] 未送信データ {len(unexported)}件を再送します')
+        try:
+            g_col = w.worksheet.col_values(7)   # G列 会社名
+            i_col = w.worksheet.col_values(9)   # I列 電話番号
+            existing = {}
+            for idx, (name, phone) in enumerate(zip(g_col, i_col), start=1):
+                key = (name.strip(), phone.strip())
+                if key[0] and key not in existing:
+                    existing[key] = idx
+        except Exception as e:
+            logging.warning(f'[Writer] シート突合スキップ（取得失敗）: {e}')
+            existing = {}
+
+        resend = []
         for db_row in unexported:
+            key = (_half(db_row['company_name'] or '').strip(), (db_row['phone'] or '').strip())
+            row_idx = existing.get(key)
+            if row_idx:
+                mark_exported(conn, db_row['id'], row_idx)
+                logging.info(f'[Writer] シート既存を検出 → exported修復: {db_row["company_name"]} (行{row_idx})')
+            else:
+                resend.append(db_row)
+        if not resend:
+            return
+
+        logging.info(f'[Writer] 未送信データ {len(resend)}件を再送します')
+        for db_row in resend:
             keys = db_row.keys()
             flush_results = w.add({
                 'company_name': db_row['company_name'],
