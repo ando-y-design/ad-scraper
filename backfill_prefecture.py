@@ -90,16 +90,17 @@ def main():
         stats[match] += 1
 
         if not args.dry_run:
+            # 1行ごとに即コミットする。バッチコミットだとAPI待ちの間も
+            # 書き込みロックを保持し続け、本体スレッドが database is locked になる
             conn.execute(
                 '''UPDATE companies
                    SET nta_prefecture=?, pref_match=?, phone_confidence=?, rank=?
                    WHERE id=?''',
                 (pref, match, confidence, rank, row['id'])
             )
-            if i % 50 == 0:
-                conn.commit()
+            conn.commit()
         if i % 100 == 0:
-            print(f'  {i}/{len(rows)} 処理済み {stats}')
+            print(f'  {i}/{len(rows)} 処理済み {stats}', flush=True)
         time.sleep(_DELAY)
 
     conn.commit()
