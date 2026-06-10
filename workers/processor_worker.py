@@ -121,7 +121,12 @@ def _process_one_lp(item: dict, conn=None) -> Optional[dict]:
     serp_phone = item.get('serp_phone')
 
     nta_key = config.get('nta_api_key', '')
-    company_name, phone, phones_str, contact_name, lp_headline, ad_signals = find_company_info(lp_url, meta_company, nta_api_key=nta_key)
+    result = find_company_info(lp_url, meta_company, nta_api_key=nta_key)
+    if len(result) == 6:
+        company_name, phone, phones_str, contact_name, lp_headline, phone_source = result
+    else:
+        company_name, phone, phones_str, contact_name, lp_headline = result
+        phone_source = ''
     beat('processor')
 
     # 法人番号と正式法人名を取得（NTA APIキー設定済みの場合のみ）
@@ -164,13 +169,39 @@ def _process_one_lp(item: dict, conn=None) -> Optional[dict]:
             (normalized, base_domain, phone)
         ).fetchone()
         if existing_src:
+            old_sources = existing_src['ad_sources'] or ''
             update_ad_sources(conn, existing_src['normalized_name'], source)
             append_keyword(conn, existing_src['normalized_name'], keyword)
+            # 新媒体が追加された場合はランクを再計算してSheets更新イベントを送る
+            new_sources = conn.execute(
+                'SELECT ad_sources, all_keywords FROM companies WHERE normalized_name=?',
+                (existing_src['normalized_name'],)
+            ).fetchone()
+            if new_sources and existing_src.get('sheet_row'):
+                from processors.rank_calculator import calc_rank, _count_sources
+                old_rank_src = _count_sources(old_sources)
+                new_rank_src = _count_sources(new_sources['ad_sources'] or '')
+                if new_rank_src > old_rank_src:
+                    seen = conn.execute('SELECT seen_count FROM companies WHERE normalized_name=?', (existing_src['normalized_name'],)).fetchone()
+                    new_rank = calc_rank(seen['seen_count'] if seen else 2, new_sources['ad_sources'] or '')
+                    try:
+                        result_queue.put({
+                            '_type': 'rank_update',
+                            'sheet_row': existing_src['sheet_row'],
+                            'rank': new_rank,
+                            'normalized_name': existing_src['normalized_name'],
+                        }, timeout=5)
+                    except Exception:
+                        pass
         return None
 
     # 同業種 × 同エリアの競合他社名を付与（Sheets表示用）
     competitors = get_competitors(conn, keyword, normalized, area_name=area_name)
     competitors_str = ' / '.join(competitors) if competitors else ''
+
+    from processors.rank_calculator import calc_rank
+    rank = calc_rank(1, source)
+
 
     return {
         'company_name': company_name.strip(),
@@ -179,6 +210,7 @@ def _process_one_lp(item: dict, conn=None) -> Optional[dict]:
         'base_url': base_domain,
         'phone': phone,
         'phones': phones_str,
+        'phone_source': phone_source,
         'ad_sources': source,
         'keyword': keyword,
         'area_name': area_name,
@@ -187,6 +219,7 @@ def _process_one_lp(item: dict, conn=None) -> Optional[dict]:
         'lp_headline': lp_headline,
         'competitors': competitors_str,
         'industry': classify_industry(keyword),
+        'rank': rank,
         'corporate_number': corporate_number,
         'nta_errored': nta_errored,
     }

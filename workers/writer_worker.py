@@ -1,4 +1,5 @@
 from __future__ import annotations
+from typing import Optional
 """SQLite + Sheets 書き込みワーカー"""
 import logging
 import queue
@@ -107,6 +108,24 @@ def writer_worker():
         try:
             inserted = insert_company(conn, data)
             if not inserted:
+                # 重複: seen_count と rank を更新してDBに反映
+                row = conn.execute(
+                    'SELECT id, seen_count, ad_sources FROM companies WHERE normalized_name=?',
+                    (data.get('normalized_name', ''),)
+                ).fetchone()
+                if row:
+                    new_count = (row['seen_count'] or 1) + 1
+                    srcs = set((row['ad_sources'] or '').split(',')) - {''}
+                    new_src = data.get('ad_sources', '')
+                    if new_src:
+                        srcs.add(new_src)
+                    merged = ','.join(sorted(srcs))
+                    new_rank = calc_rank(new_count, merged)
+                    conn.execute(
+                        'UPDATE companies SET seen_count=?, ad_sources=?, rank=? WHERE id=?',
+                        (new_count, merged, new_rank, row['id'])
+                    )
+                    conn.commit()
                 continue
 
             # NTA正常応答でヒットなし → ゴミ名の可能性が高いのでスキップ
@@ -114,7 +133,15 @@ def writer_worker():
                 logging.info(f'[Writer] NTA未マッチのためスキップ: {data.get("company_name")}')
                 continue
 
-            data['rank'] = calc_rank(1, data.get('ad_sources', ''))
+            # processorが計算したrankをDBに保存（INSERT時はrankカラムが含まれないため）
+            if not data.get('rank'):
+                data['rank'] = calc_rank(1, data.get('ad_sources', ''))
+            conn.execute(
+                'UPDATE companies SET rank=? WHERE normalized_name=?',
+                (data['rank'], data.get('normalized_name', ''))
+            )
+            conn.commit()
+
 
             if data.get('keyword'):
                 update_keyword_found(conn, data['keyword'])

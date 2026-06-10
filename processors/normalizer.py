@@ -49,6 +49,9 @@ def normalize_url(url: str) -> str:
         return url
 
 
+normalize_base_url = normalize_url
+
+
 def get_base_domain(url: str) -> str:
     try:
         ext = tldextract.extract(url)

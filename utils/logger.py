@@ -3,6 +3,10 @@ from logging.handlers import RotatingFileHandler
 from pathlib import Path
 
 
+def get_logger(name: str) -> logging.Logger:
+    return logging.getLogger(name)
+
+
 LOG_DIR = Path(__file__).parent.parent / 'logs'
 
 

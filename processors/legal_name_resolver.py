@@ -57,6 +57,57 @@ _HEADERS = {
     'Accept': 'application/xml',
 }
 
+_LEGAL_KINDS = (
+    '株式会社', '有限会社', '合同会社', '合資会社', '合名会社',
+    '一般社団法人', '公益社団法人', '一般財団法人', '公益財団法人',
+    '医療法人', '社会福祉法人', '学校法人', 'NPO法人', '特定非営利活動法人',
+    '弁護士法人', '税理士法人', '協同組合',
+)
+
+
+def _strip_garbage(name: str) -> str:
+    """NTA再トライ用の簡易ゴミ除去（circular import回避のため最小限実装）。"""
+    # All rights reserved
+    name = re.sub(r'\s*[,.]?\s*[Aa]ll\s+[Rr]ights?\s+[Rr]eserved\.?\s*$', '', name).strip()
+    # 「会社概要」はこちら
+    name = re.sub(r'\s*「[^」]{1,20}」は(?:こちら|こちらから)?\s*$', '', name).strip()
+    # ホームページ末尾
+    name = re.sub(r'ホームページ\s*$', '', name).strip()
+    # 代表者名以降
+    name = re.sub(r'代表者名.+$', '', name).strip()
+    # の+採用/求人/個人情報等の末尾説明
+    name = re.sub(
+        r'の(?:採用(?:情報|サイト|ページ|・求人情報)?|求人(?:情報|サイト|ページ)?|'
+        r'個人情報[^$]*について|お取り扱い[^$]*|会社(?:概要|情報|案内|紹介))\s*$',
+        '', name
+    ).strip()
+    # 閉じカッコなし括弧注記
+    name = re.sub(r'\s*[（(][^）)]{4,}$', '', name).strip()
+    # 末尾の孤立記号
+    name = re.sub(r'[\-‐–—－_/\\|｜・）)]+$', '', name).strip()
+    return name
+
+
+def _is_safe_nta_match(queried_name: str, nta_name: str) -> bool:
+    """
+    NTA返却名がクエリ名と同一企業か確認する（誤マッチ防止）。
+    法人格が一致 かつ コア名が完全一致（NFKC正規化後）の場合のみ True。
+    """
+    if not nta_name:
+        return False
+    # 法人格チェック: クエリ名に含まれる法人格がNTA名にもあること
+    queried_kind = next((k for k in _LEGAL_KINDS if k in queried_name), '')
+    if queried_kind and queried_kind not in nta_name:
+        return False
+    # コア名（法人格除去）を NFKC 正規化して完全一致チェック
+    q_core = _normalize_for_match(_JP_LEGAL_RE.sub('', queried_name).strip())
+    q_core = _normalize_for_match(_EN_LEGAL_SUFFIX_RE.sub('', q_core).strip())
+    n_core = _normalize_for_match(_JP_LEGAL_RE.sub('', nta_name).strip())
+    n_core = _normalize_for_match(_EN_LEGAL_SUFFIX_RE.sub('', n_core).strip())
+    if not q_core or not n_core:
+        return False
+    return q_core == n_core
+
 # プロセス内メモリキャッシュ（同一名の重複 API 呼び出しを防ぐ）
 # (resolved_name, corporate_number) のタプルを保持
 _cache: dict[str, tuple[Optional[str], Optional[str]]] = {}
@@ -164,6 +215,27 @@ def lookup_corporate_number(name: str, api_key: str) -> tuple[Optional[str], Opt
     resolved_name, corp_number = _query_nta(core, api_key, original_name=name)
     if resolved_name == '__NTA_ERROR__':
         return '__NTA_ERROR__', None
+
+    # ── ゴミ除去リトライ ────────────────────────────────────────────────────
+    # 法人番号が取れなかった場合、会社名のゴミを除去して再トライ。
+    # NTA返却名が cleaned名と完全一致（NFKC後・法人格一致）の場合のみ採用。
+    # 誤マッチ防止のため部分一致・類似マッチは禁止。
+    if not corp_number:
+        cleaned = _strip_garbage(name)
+        if cleaned and cleaned != name and len(cleaned) >= 4:
+            cleaned_core = _JP_LEGAL_RE.sub('', cleaned).strip()
+            cleaned_core = _EN_LEGAL_SUFFIX_RE.sub('', cleaned_core).strip()
+            if cleaned_core:
+                r2_name, r2_num = _query_nta(cleaned_core, api_key, original_name=cleaned)
+                if r2_num and r2_num != '__NTA_ERROR__' and _is_safe_nta_match(cleaned, r2_name):
+                    resolved_name, corp_number = r2_name, r2_num
+                    logging.info(
+                        f'[NTA] ゴミ除去再トライで法人番号取得: "{name}" → "{cleaned}" '
+                        f'→ {r2_num} / "{r2_name}"'
+                    )
+                else:
+                    logging.debug(f'[NTA] ゴミ除去再トライも未取得: "{name}" → "{cleaned}"')
+    # ────────────────────────────────────────────────────────────────────────
 
     _corp_num_cache[name] = (corp_number, resolved_name)
 
