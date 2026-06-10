@@ -1427,33 +1427,76 @@ def _extract_company_from_soup(soup: BeautifulSoup) -> Optional[str]:
     return labeled_fallback
 
 
+# 行ベースの特商法ペアリングでも、構造化抽出と同じ網羅的なラベル集合を使う。
+# （旧実装は会社ラベルが 販売業者|運営者|事業者名|… の一部しか見ておらず、
+#  「運営会社」等の別主体ラベルを境界として認識できず取り違えの原因になっていた）
 _TOKUTEI_COMPANY_LABELS = re.compile(
-    r'販売業者|運営者|事業者名?|会社名|法人名|商号|屋号', re.IGNORECASE
+    '|'.join(sorted((re.escape(k) for k in _COMPANY_TABLE_LABELS), key=len, reverse=True)),
+    re.IGNORECASE
 )
 _TOKUTEI_PHONE_LABELS = re.compile(
-    r'(?:電話|TEL|Tel|tel)[\s番号：:]*', re.IGNORECASE
+    '|'.join(sorted(
+        (re.escape(k) for k in (_PHONE_TABLE_LABELS | {'TEL', 'Tel', 'tel', '電話', '電話番号'})),
+        key=len, reverse=True
+    )),
+    re.IGNORECASE
 )
 
 
 def _pick_phone_from_tokutei_section(lines: list[str], company_core: str, phones: list[str]) -> Optional[str]:
     """特商法形式テキストから、会社ラベル行の近傍にある電話ラベル行の番号を返す。
     会社名コアが会社ラベル行に含まれ、±8行以内に電話ラベル行があり、
-    その行に含まれる番号が candidates に入っていれば採用する。"""
+    その行に含まれる番号が candidates に入っていれば採用する。
+
+    取り違え防止のため:
+      ① 位置順ではなく「会社ラベル行に最も近い」電話ラベル行を優先する。
+      ② 別主体(別の販売業者/運営会社ラベル)のブロック境界を跨がない
+         — 会社ラベル行と電話ラベル行の間に company_core を含まない別の
+         会社ラベル行があれば、その電話は別主体のものとみなして探索を打ち切る。
+    """
     candidate_digits = {re.sub(r'\D', '', p): p for p in phones if p}
+    if not candidate_digits:
+        return None
+
+    def _phone_in_line(idx: int) -> Optional[str]:
+        if not _TOKUTEI_PHONE_LABELS.search(lines[idx]):
+            return None
+        for p in extract_all_phones(lines[idx]):
+            digits = re.sub(r'\D', '', p)
+            if digits in candidate_digits:
+                return candidate_digits[digits]
+        return None
+
+    def _is_other_company_label(idx: int) -> bool:
+        """別主体の会社ラベル行か（会社ラベルを持つが company_core を含まない）。"""
+        return bool(_TOKUTEI_COMPANY_LABELS.search(lines[idx])) and company_core not in lines[idx]
+
     for i, line in enumerate(lines):
-        if _TOKUTEI_COMPANY_LABELS.search(line) and company_core in line:
-            # 会社ラベル行を基点に ±8 行以内で電話ラベル行を探す
-            window_start = max(0, i - 8)
-            window_end = min(len(lines), i + 9)
-            for j in range(window_start, window_end):
-                if j == i:
-                    continue
-                if _TOKUTEI_PHONE_LABELS.search(lines[j]):
-                    found = extract_all_phones(lines[j])
-                    for p in found:
-                        digits = re.sub(r'\D', '', p)
-                        if digits in candidate_digits:
-                            return candidate_digits[digits]
+        if not (_TOKUTEI_COMPANY_LABELS.search(line) and company_core in line):
+            continue
+        # 会社ラベル行 i を基点に、距離 d=1..8 で近い行から両方向に探索する。
+        # 別主体の会社ラベル行に当たった方向はそこで打ち切り（ブロック境界）。
+        up_blocked = False
+        down_blocked = False
+        for d in range(1, 9):
+            down = i + d
+            if not down_blocked and down < len(lines):
+                if _is_other_company_label(down):
+                    down_blocked = True
+                else:
+                    hit = _phone_in_line(down)
+                    if hit:
+                        return hit
+            up = i - d
+            if not up_blocked and up >= 0:
+                if _is_other_company_label(up):
+                    up_blocked = True
+                else:
+                    hit = _phone_in_line(up)
+                    if hit:
+                        return hit
+            if up_blocked and down_blocked:
+                break
     return None
 
 
