@@ -135,8 +135,10 @@ def scrape_bing(page: Page, keyword: str, area: Optional[dict] = None, heartbeat
             for (const c of containers) {
                 for (const a of c.querySelectorAll('a[href]')) push(a.href || '');
             }
-            // ページ全体の /aclick・/aclk リンクも拾う（コンテナ外の広告対策）
-            for (const a of document.querySelectorAll('a[href*="/aclick"], a[href*="/aclk"]')) {
+            // ページ全体の広告リダイレクトリンクも拾う（コンテナ外の広告対策）。
+            // Bingの実際の広告リダイレクトは /ck/a?...&u=a1<base64>&ntb=1 形式。
+            // 旧来の /aclick・/aclk も後方互換で残す。
+            for (const a of document.querySelectorAll('a[href*="/ck/a"], a[href*="/aclick"], a[href*="/aclk"]')) {
                 push(a.href || '');
             }
             return out.slice(0, 40);
@@ -146,7 +148,7 @@ def scrape_bing(page: Page, keyword: str, area: Optional[dict] = None, heartbeat
         ad_hrefs = []
 
     for href in ad_hrefs:
-        if '/aclick' in href or '/aclk' in href:
+        if '/ck/a' in href or '/aclick' in href or '/aclk' in href:
             lp = _extract_lp_from_bing_aclick(href)
             if lp and lp not in seen:
                 seen.add(lp)
