@@ -10,6 +10,7 @@ from playwright.sync_api import sync_playwright
 
 from scrapers.google_scraper import scrape_google, warmup
 from scrapers.yahoo_scraper import scrape_yahoo
+from scrapers.serp_api_scraper import scrape_bing_via_api
 from storage.database import get_connection
 from utils.browser import create_browser_context, new_stealth_page
 from utils.keywords import (
@@ -176,6 +177,23 @@ def _run_yahoo_worker(name: str, profile_dir):
                                         else:
                                             logging.error(f'{tag} エラー: {e}')
                                         diag.record_scrape('Yahoo', 0)
+                                    beat(name)
+
+                                # Bing 広告（リスティング）— HasData Bing SERP API（純API・ブラウザ不要）。
+                                # 二重課金を避けるため primary(yahoo) スレッドのみ実行。
+                                if name == 'yahoo' and config.get('sources', {}).get('bing', False):
+                                    try:
+                                        beat(name)
+                                        _bloc = area.get('serp_location') if area else None
+                                        bing_urls = scrape_bing_via_api(keyword, location=_bloc)
+                                        if bing_urls is not None:
+                                            diag.record_scrape('Bing', len(bing_urls))
+                                            _aname = area['name'] if area else None
+                                            for url in bing_urls:
+                                                _enqueue_lp(url, 'Bing', keyword, area_name=_aname)
+                                    except Exception as e:
+                                        logging.error(f'{tag} Bing エラー: {e}')
+                                        diag.record_scrape('Bing', 0)
                                     beat(name)
 
                                 update_keyword_area_searched(conn, keyword, area['name'] if area else None)

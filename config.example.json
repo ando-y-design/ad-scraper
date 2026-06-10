@@ -28,6 +28,7 @@
     "google": true,
     "yahoo": true,
     "meta": true,
+    "bing": true,
     "google_first": true,
     "yahoo2": false
   },

@@ -122,7 +122,9 @@ watchdog → repair_worker → 問題検知 → pending_fixes.jsonlに記録
   "keywords": [...],
   "auto_code_repair": false,
   "phone_strategy": "direct",   // direct=直通/代表番号優先(架電到達率最大) / sme / enterprise
-  "sources": {"google": true, "yahoo": true, "meta": true},
+  "sources": {"google": true, "yahoo": true, "meta": true, "bing": true},
+  // bing=HasData Bing SERP API でリスティング広告収集。Googleと同じhasdataキーを使用。
+  // 二重課金回避のため yahoo(primary)スレッドのみ実行。yahoo2では走らない。
   "timing": {"min_delay_seconds": 60, "max_delay_seconds": 300}
 }
 ```
