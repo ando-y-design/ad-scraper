@@ -58,6 +58,7 @@ def init_db() -> sqlite3.Connection:
             base_url         TEXT UNIQUE,
             phone            TEXT UNIQUE,
             phones           TEXT,
+            phone_source     TEXT,
             industry         TEXT,
             ad_sources       TEXT,
             sheet_row        INTEGER,
@@ -68,7 +69,9 @@ def init_db() -> sqlite3.Connection:
             lp_headline      TEXT,
             all_keywords     TEXT,
             area_name        TEXT,
-            corporate_number TEXT
+            corporate_number TEXT,
+            seen_count       INTEGER DEFAULT 1,
+            rank             TEXT
         );
 
         CREATE TABLE IF NOT EXISTS keywords (
@@ -104,7 +107,8 @@ def init_db() -> sqlite3.Connection:
     for col, typedef in [
         ('contact_name', 'TEXT'), ('lp_headline', 'TEXT'),
         ('all_keywords', 'TEXT'), ('area_name', 'TEXT'),
-        ('corporate_number', 'TEXT'),
+        ('corporate_number', 'TEXT'), ('phone_source', 'TEXT'),
+        ('seen_count', 'INTEGER DEFAULT 1'), ('rank', 'TEXT'),
     ]:
         if col not in existing_cols:
             conn.execute(f'ALTER TABLE companies ADD COLUMN {col} {typedef}')

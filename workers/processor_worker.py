@@ -176,7 +176,7 @@ def _process_one_lp(item: dict, conn=None) -> Optional[dict]:
 
     if is_duplicate(conn, normalized, base_domain, phone):
         existing_src = conn.execute(
-            'SELECT ad_sources, normalized_name FROM companies '
+            'SELECT ad_sources, normalized_name, sheet_row FROM companies '
             'WHERE normalized_name=? OR base_url=? OR phone=?',
             (normalized, base_domain, phone)
         ).fetchone()
@@ -189,7 +189,7 @@ def _process_one_lp(item: dict, conn=None) -> Optional[dict]:
                 'SELECT ad_sources, all_keywords FROM companies WHERE normalized_name=?',
                 (existing_src['normalized_name'],)
             ).fetchone()
-            if new_sources and existing_src.get('sheet_row'):
+            if new_sources and existing_src['sheet_row']:
                 from processors.rank_calculator import calc_rank, _count_sources
                 old_rank_src = _count_sources(old_sources)
                 new_rank_src = _count_sources(new_sources['ad_sources'] or '')
