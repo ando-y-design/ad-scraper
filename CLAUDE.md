@@ -41,6 +41,7 @@ ad_scraper/
 │   ├── meta_worker.py         # Meta広告収集（Playwright）
 │   ├── processor_worker.py    # LP解析・会社情報抽出（config.processor_workers並列・既定3）
 │   ├── writer_worker.py       # SQLite + Google Sheets書き込み
+│   ├── nta_retry_worker.py    # 法人番号未取得分の定期再照会（6時間ごと・上限5回）
 │   └── watchdog_worker.py     # ハング検知・スレッド再起動・自己修復
 ├── scrapers/
 │   ├── google_scraper.py      # Google広告 URL抽出
@@ -49,15 +50,17 @@ ad_scraper/
 │   └── meta_scraper.py        # Meta広告ライブラリ
 ├── processors/
 │   ├── company_finder.py      # 特商法ページ解析・会社名抽出
-│   ├── legal_name_resolver.py # 英語法人名→国税庁API→正式日本法人名
+│   ├── legal_name_resolver.py # 英語法人名→国税庁API→正式日本法人名＋登記都道府県取得
 │   ├── normalizer.py          # 会社名・電話番号正規化
-│   └── phone_finder.py        # 電話番号抽出
+│   ├── phone_finder.py        # 電話番号抽出
+│   └── quality.py             # phone_confidence算出・ランク降格（架電可能性スコア）
 ├── storage/
 │   ├── database.py            # SQLite操作
 │   └── sheets_writer.py       # Google Sheets書き込み
 ├── utils/
 │   ├── keywords.py            # キーワードDB操作（ロジックのみ）
 │   ├── keyword_data.py        # キーワードリストデータ（500件）← 通常読まない
+│   ├── area_codes.py          # 市外局番→都道府県マップ（NTA登記住所との整合チェック）
 │   ├── browser.py             # Playwright コンテキスト管理
 │   ├── config_loader.py       # config.json読み込み
 │   ├── daily_briefing.py      # 朝報生成
@@ -102,8 +105,10 @@ yahoo/meta workers: Playwrightで広告URL収集
 processor_worker:
     ① LP取得（requests + BeautifulSoup）
     ② 特商法ページ解析 → 会社名
-    ③ NTA API で英語法人名を日本語正式名に変換
+    ③ NTA API で英語法人名を日本語正式名に変換（登記都道府県も取得）
     ④ 電話番号抽出
+    ⑤ 登記都道府県×市外局番の整合チェック → pref_match / phone_confidence
+       （mismatch=遠隔地はランク1段階降格。削除はしない）
     ↓ result_queue
 writer_worker → companies.db + Google Sheets
     ↓
