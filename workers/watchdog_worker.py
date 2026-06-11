@@ -60,37 +60,64 @@ def _kill_scraper_chrome(thread_name: str = 'both'):
 
     for profile_dir in target_profiles:
         profile_name = profile_dir.name
-        # Step 1: graceful close
-        try:
-            _sp.run(
-                ['powershell', '-NoProfile', '-Command',
-                 f'Get-WmiObject Win32_Process -Filter "name=\'chrome.exe\'" | '
-                 f'Where-Object {{ $_.CommandLine -like \'*{profile_name}*\' }} | '
-                 f'ForEach-Object {{ $_.Terminate() }}'],
-                capture_output=True, text=True, timeout=10,
-            )
-            logging.info(f'[Watchdog] Chrome ({profile_name}) に graceful 終了を要求しました')
-        except Exception as e:
-            logging.debug(f'[Watchdog] Chrome graceful 終了失敗: {e}')
+        if sys.platform == 'win32':
+            # Step 1: graceful close (Windows)
+            try:
+                _sp.run(
+                    ['powershell', '-NoProfile', '-Command',
+                     f'Get-WmiObject Win32_Process -Filter "name=\'chrome.exe\'" | '
+                     f'Where-Object {{ $_.CommandLine -like \'*{profile_name}*\' }} | '
+                     f'ForEach-Object {{ $_.Terminate() }}'],
+                    capture_output=True, text=True, timeout=10,
+                )
+                logging.info(f'[Watchdog] Chrome ({profile_name}) に graceful 終了を要求しました')
+            except Exception as e:
+                logging.debug(f'[Watchdog] Chrome graceful 終了失敗: {e}')
 
-        # Step 2: 最大10秒待つ
-        _wait_chrome_exit(profile_dir, timeout=10.0)
+            _wait_chrome_exit(profile_dir, timeout=10.0)
 
-        # Step 3: まだ生きていれば force kill
-        try:
-            result = _sp.run(
-                ['powershell', '-NoProfile', '-Command',
-                 f'$procs = Get-WmiObject Win32_Process -Filter "name=\'chrome.exe\'" | '
-                 f'Where-Object {{ $_.CommandLine -like \'*{profile_name}*\' }}; '
-                 f'if ($procs) {{ $procs | ForEach-Object {{ Stop-Process -Id $_.ProcessId -Force -ErrorAction SilentlyContinue }}; Write-Output "forced" }}'],
-                capture_output=True, text=True, timeout=15,
-            )
-            if 'forced' in (result.stdout or ''):
-                logging.warning(f'[Watchdog] Chrome ({profile_name}) が graceful 終了せず — force kill しました')
-            else:
-                logging.info(f'[Watchdog] Chrome ({profile_name}) は graceful に終了しました')
-        except Exception as e:
-            logging.debug(f'[Watchdog] Chrome force kill 失敗: {e}')
+            # Step 2: force kill (Windows)
+            try:
+                result = _sp.run(
+                    ['powershell', '-NoProfile', '-Command',
+                     f'$procs = Get-WmiObject Win32_Process -Filter "name=\'chrome.exe\'" | '
+                     f'Where-Object {{ $_.CommandLine -like \'*{profile_name}*\' }}; '
+                     f'if ($procs) {{ $procs | ForEach-Object {{ Stop-Process -Id $_.ProcessId -Force -ErrorAction SilentlyContinue }}; Write-Output "forced" }}'],
+                    capture_output=True, text=True, timeout=15,
+                )
+                if 'forced' in (result.stdout or ''):
+                    logging.warning(f'[Watchdog] Chrome ({profile_name}) が graceful 終了せず — force kill しました')
+                else:
+                    logging.info(f'[Watchdog] Chrome ({profile_name}) は graceful に終了しました')
+            except Exception as e:
+                logging.debug(f'[Watchdog] Chrome force kill 失敗: {e}')
+        else:
+            # macOS / Linux: pgrep でプロファイルパスを含むChrome PIDを取得してkill
+            try:
+                result = _sp.run(
+                    ['pgrep', '-f', str(profile_dir)],
+                    capture_output=True, text=True, timeout=5,
+                )
+                pids = [p.strip() for p in result.stdout.splitlines() if p.strip()]
+                if pids:
+                    _sp.run(['kill', '-TERM'] + pids, capture_output=True, timeout=5)
+                    logging.info(f'[Watchdog] Chrome ({profile_name}) に SIGTERM を送信しました (PID: {pids})')
+                    _wait_chrome_exit(profile_dir, timeout=10.0)
+                    # まだ生きていれば SIGKILL
+                    result2 = _sp.run(
+                        ['pgrep', '-f', str(profile_dir)],
+                        capture_output=True, text=True, timeout=5,
+                    )
+                    remaining = [p.strip() for p in result2.stdout.splitlines() if p.strip()]
+                    if remaining:
+                        _sp.run(['kill', '-KILL'] + remaining, capture_output=True, timeout=5)
+                        logging.warning(f'[Watchdog] Chrome ({profile_name}) が SIGTERM で終了せず — SIGKILL しました (PID: {remaining})')
+                    else:
+                        logging.info(f'[Watchdog] Chrome ({profile_name}) は graceful に終了しました')
+                else:
+                    logging.debug(f'[Watchdog] Chrome ({profile_name}) は既に終了済みです')
+            except Exception as e:
+                logging.debug(f'[Watchdog] Chrome kill 失敗: {e}')
 
 
 def _run_self_repair():
