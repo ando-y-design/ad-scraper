@@ -146,6 +146,17 @@ def meta_worker():
                                 ads = scrape_meta(meta_page, search_query)
                                 diag = get_diagnostics()
 
+                                # 取得済み広告は「ページ生死確認」より前に必ずキューへ流す。
+                                # scrape_meta は graphql レスポンスから収集済みで、直後にページが
+                                # 死んでも ads は手元に残る。先に enqueue しないと、下の死亡検知の
+                                # continue で取得済み広告を丸ごと捨ててしまい、Metaが0件保存になる
+                                # （広告は毎回見つかっているのにDBに入らない根本原因）。
+                                for ad in ads:
+                                    _enqueue_lp(ad['url'], 'Meta', search_query, ad.get('company'))
+                                diag.record_scrape('Meta', len(ads))
+                                if ads:
+                                    diag.reset_meta_failures()
+
                                 # ── ページ生死確認（scrape_meta が内部で例外を飲んでも検出） ──
                                 page_alive = _check_meta_page_alive(meta_page)
                                 if not page_alive:
@@ -157,11 +168,8 @@ def meta_worker():
                                     continue
 
                                 _crash_streak = 0
-                                diag.record_scrape('Meta', len(ads))
-                                if ads:
-                                    diag.reset_meta_failures()
-                                else:
-                                    # 0件の場合: ログインリダイレクト時のみ失敗カウント
+                                if not ads:
+                                    # 0件かつログインリダイレクト時のみ失敗カウント（ページ生存時のみ）
                                     # (キーワードにMetaアドがない正常ケースは除外)
                                     try:
                                         if 'login' in meta_page.url or 'checkpoint' in meta_page.url:
@@ -170,8 +178,6 @@ def meta_worker():
                                             diag.record_meta_failure()
                                     except Exception:
                                         pass
-                                for ad in ads:
-                                    _enqueue_lp(ad['url'], 'Meta', search_query, ad.get('company'))
                             except Exception as e:
                                 err_lower = str(e).lower()
                                 _BROWSER_DEAD_SIGNALS = (

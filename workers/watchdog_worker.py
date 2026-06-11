@@ -92,10 +92,16 @@ def _kill_scraper_chrome(thread_name: str = 'both'):
             except Exception as e:
                 logging.debug(f'[Watchdog] Chrome force kill 失敗: {e}')
         else:
-            # macOS / Linux: pgrep でプロファイルパスを含むChrome PIDを取得してkill
+            # macOS / Linux: pgrep で対象プロファイルのChrome PIDを取得してkill。
+            # パターンは `--user-data-dir=<profile> `（末尾スペース付き）で厳密一致させる。
+            # 単純な profile パス一致だと browser_profile が browser_profile_yahoo の
+            # 部分文字列になり、metaをkillする際にyahooのChromeまで巻き込んで殺してしまう
+            # （全ソースが連鎖死する不具合の原因）。user-data-dir は最後の引数ではないため
+            # 末尾に必ずスペースが来るので、これで meta と yahoo/yahoo2 を区別できる。
+            kill_pattern = f'--user-data-dir={profile_dir} '
             try:
                 result = _sp.run(
-                    ['pgrep', '-f', str(profile_dir)],
+                    ['pgrep', '-f', kill_pattern],
                     capture_output=True, text=True, timeout=5,
                 )
                 pids = [p.strip() for p in result.stdout.splitlines() if p.strip()]
@@ -105,7 +111,7 @@ def _kill_scraper_chrome(thread_name: str = 'both'):
                     _wait_chrome_exit(profile_dir, timeout=10.0)
                     # まだ生きていれば SIGKILL
                     result2 = _sp.run(
-                        ['pgrep', '-f', str(profile_dir)],
+                        ['pgrep', '-f', kill_pattern],
                         capture_output=True, text=True, timeout=5,
                     )
                     remaining = [p.strip() for p in result2.stdout.splitlines() if p.strip()]
