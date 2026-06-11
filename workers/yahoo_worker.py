@@ -128,11 +128,13 @@ def _run_yahoo_worker(name: str, profile_dir):
                                         if google_items is not None:
                                             diag.record_scrape('Google', len(google_items))
                                             _aname = area['name'] if area else None
-                                            for item in google_items:
+                                            # scrape_google は URL文字列のリストを返す（dictではない）。
+                                            # item['url'] でアクセスすると "string indices must be
+                                            # integers" で全Google結果が落ちるため、文字列として扱う。
+                                            for url in google_items:
                                                 _enqueue_lp(
-                                                    item['url'], 'Google', keyword,
+                                                    url, 'Google', keyword,
                                                     area_name=_aname,
-                                                    serp_phone=item.get('serp_phone'),
                                                 )
                                             google_hit = len(google_items) > 0
                                     except Exception as e:
