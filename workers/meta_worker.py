@@ -36,7 +36,7 @@ def _check_meta_page_alive(page) -> bool:
     if page is None:
         return False
     try:
-        page.evaluate("1", timeout=2000)
+        page.evaluate("1")
         return True
     except Exception:
         return False
