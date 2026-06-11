@@ -6,6 +6,7 @@ import queue
 import time
 
 from processors.rank_calculator import calc_rank
+from processors.normalizer import normalize_company
 from storage.database import (
     get_connection, get_unexported, insert_company, mark_exported,
 )
@@ -31,6 +32,28 @@ def _mark_batch_exported(conn, flush_results: list[tuple[str, int]]):
         ).fetchone()
         if row:
             mark_exported(conn, row['id'], sheet_row)
+
+
+def _locate_rank_row(writer, data) -> Optional[int]:
+    """ランク更新対象の現在の行番号を実シートから引き直す。
+    キャッシュしたsheet_rowはaudit_and_clean_sheetの行削除や架電チームの手動削除で
+    下方向にズレるため信用しない。法人番号（A列=index0）を優先キーに、見つからなければ
+    正規化した会社名（G列=index6）で一致行を探す。見つからなければNone。"""
+    corp = (data.get('corporate_number') or '').strip()
+    target_name = (data.get('normalized_name') or '').strip()
+    all_values = writer.worksheet.get_all_values()
+    name_match = None
+    for i, row in enumerate(all_values, 1):
+        if i == 1:
+            continue  # ヘッダー行
+        corp_cell = row[0].strip() if len(row) > 0 else ''
+        if corp and corp_cell and corp_cell == corp:
+            return i
+        if target_name and name_match is None:
+            name_cell = row[6] if len(row) > 6 else ''
+            if name_cell and normalize_company(name_cell) == target_name:
+                name_match = i
+    return name_match
 
 
 def writer_worker():
@@ -171,17 +194,26 @@ def writer_worker():
         try:
             # rank_updateイベント: 既存行のランクのみ更新（新媒体追加でランク昇格時）
             if data.get('_type') == 'rank_update':
-                sheet_row = data.get('sheet_row')
-                if writer and sheet_row:
+                if writer:
                     try:
-                        writer.worksheet.update(
-                            values=[[data.get('rank', '')]],
-                            range_name=f'F{sheet_row}', raw=True,
-                        )
-                        logging.info(
-                            f'[Writer] ランク更新: 行{sheet_row} → {data.get("rank")} '
-                            f'({data.get("normalized_name", "")})'
-                        )
+                        # キャッシュしたsheet_rowは行削除でズレるため使わず、
+                        # 法人番号/会社名で実シートから対象行を引き直す。
+                        target_row = _locate_rank_row(writer, data)
+                        if target_row:
+                            writer.worksheet.update(
+                                values=[[data.get('rank', '')]],
+                                range_name=f'F{target_row}', raw=True,
+                            )
+                            logging.info(
+                                f'[Writer] ランク更新: 行{target_row} → {data.get("rank")} '
+                                f'({data.get("normalized_name", "")})'
+                            )
+                        else:
+                            logging.warning(
+                                f'[Writer] ランク更新: 対象行が見つからずスキップ '
+                                f'(法人番号={data.get("corporate_number", "")}, '
+                                f'{data.get("normalized_name", "")})'
+                            )
                     except Exception as e:
                         logging.warning(f'[Writer] ランク更新失敗（スキップ）: {e}')
                 continue

@@ -21,13 +21,17 @@ SCOPES = [
     'https://www.googleapis.com/auth/drive',
 ]
 
-# チーム共有「リスト」シートの実レイアウト（14列・A列=法人番号）。
+# チーム共有「リスト」シート（CScrape-Kenny）の実レイアウト（14列・A列=法人番号）。
 # 変更時はシート実物と必ず突合すること。コード側だけ変えると列ズレ書き込みになり、
-# 担当名・話した内容など架電チームの手動入力列を汚染する（2026-06-10に発生・修復済み）。
+# 担当名・話した内容など架電チームの手動入力列を汚染する。
+# 自動書き込み列: 法人番号(A) / キーワード(C) / 広告ソース(D) / 取得日時(E) /
+#   ランク(F) / 会社名(G) / LP URL(H) / 電話番号(I)。
+# 手動入力列（書き込まない）: CRM(B) / 担当名(J) / 話した内容(K) / 前回(L) / M / 次回(N)。
+# M列はシート上ヘッダーが空欄のため '' で一致させる（sync_headers警告防止）。
 HEADERS = [
     '法人番号', 'CRM', 'キーワード', '広告ソース', '取得日時', 'ランク',
     '会社名', 'LP URL', '電話番号', '担当名', '話した内容', '前回',
-    '架電結果', '次回',
+    '', '次回',
 ]
 
 
@@ -135,20 +139,34 @@ class SheetsWriter:
         self._heartbeat = heartbeat_callback
         self._batch: list[tuple[str, list]] = []
         self._last_flush = datetime.now()
-        self._next_row = self._get_next_row()
+        self._next_row = self._compute_next_row()
 
-    def _get_next_row(self) -> int:
-        # get_all_valuesは空行も含む行数を返すためappend位置と合わない。
-        # 実際のデータ末尾行をfindで取得する。
+    def _call_with_timeout(self, fn, *args, **kwargs):
+        # Sheets API呼び出しがハングするとセッション全体が止まるため、
+        # 全ての呼び出しを_SHEETS_TIMEOUT秒で打ち切る。
+        with concurrent.futures.ThreadPoolExecutor(max_workers=1) as ex:
+            fut = ex.submit(fn, *args, **kwargs)
+            try:
+                return fut.result(timeout=_SHEETS_TIMEOUT)
+            except concurrent.futures.TimeoutError:
+                raise TimeoutError(f'Sheets呼び出しが{_SHEETS_TIMEOUT}秒でタイムアウト')
+
+    def _compute_next_row(self) -> int:
+        # 必ず「ライブのシートの最終行の次」を返す。キャッシュした行番号を信用しない。
+        # 毎時のaudit_and_clean（行削除）や架電チームの手動編集で行数が変わるため、
+        # 書き込み直前に毎回実シートを読み直さないと、ズレた位置や全く違う場所に
+        # 書き込まれてしまう（2026-06-11 ユーザー報告の不具合の根本原因）。
+        # 全列を走査し、データの入った最終行を求める。これにより手動入力列も
+        # 上書きせず、必ず本当の最終行の直後に追記する。
         try:
-            col_a = self.worksheet.col_values(1)
-            # ヘッダーを含む実データ行数 → 次行
-            filled = max((i for i, v in enumerate(col_a, 1) if v.strip()), default=1)
-            # A列以外にもデータがある可能性のため全列の最大行も確認
-            col_g = self.worksheet.col_values(7)
-            filled_g = max((i for i, v in enumerate(col_g, 1) if v.strip()), default=1)
-            return max(filled, filled_g) + 1
-        except Exception:
+            all_values = self._call_with_timeout(self.worksheet.get_all_values)
+            last = 1  # 最低でもヘッダー行
+            for i, row in enumerate(all_values, 1):
+                if any((cell or '').strip() for cell in row):
+                    last = i
+            return last + 1
+        except Exception as e:
+            logging.warning(f'[Writer] 最終行の取得に失敗、行2にフォールバック: {e}')
             return 2
 
     def sync_headers(self):
@@ -167,20 +185,20 @@ class SheetsWriter:
         [(normalized_name, sheet_row), ...] を返す。それ以外はNone。
         """
         row = [
-            data.get('corporate_number') or '',  # 法人番号
-            '',                                  # CRM（手動）
-            data.get('keyword') or '',           # キーワード
-            data.get('ad_sources') or '',        # 広告ソース
-            data.get('found_date') or '',        # 取得日時
-            data.get('rank') or '',              # ランク
-            _half(data.get('company_name') or ''), # 会社名（全角英数→半角）
-            data.get('lp_url') or '',            # LP URL
-            data.get('phone') or '',             # 電話番号
-            data.get('contact_name') or '',      # 担当名（架電チームが上書き可）
-            '',                                  # 話した内容（手動）
-            '',                                  # 前回（手動）
-            '',                                  # 架電結果（手動）
-            '',                                  # 次回（手動）
+            data.get('corporate_number') or '',    # A 法人番号
+            '',                                    # B CRM（手動）
+            data.get('keyword') or '',             # C キーワード
+            data.get('ad_sources') or '',          # D 広告ソース
+            data.get('found_date') or '',          # E 取得日時
+            data.get('rank') or '',                # F ランク
+            _half(data.get('company_name') or ''), # G 会社名（全角英数→半角）
+            data.get('lp_url') or '',              # H LP URL
+            data.get('phone') or '',               # I 電話番号
+            '',                                    # J 担当名（手動）
+            '',                                    # K 話した内容（手動）
+            '',                                    # L 前回（手動）
+            '',                                    # M（手動）
+            '',                                    # N 次回（手動）
         ]
         self._batch.append((data.get('normalized_name', ''), row))
         elapsed = (datetime.now() - self._last_flush).total_seconds()
@@ -198,28 +216,22 @@ class SheetsWriter:
 
         names = [item[0] for item in self._batch]
         rows = [item[1] for item in self._batch]
-        start_row = self._next_row
 
         for attempt in range(3):
             try:
-                # タイムアウト付きで append_rows を実行（ハング防止）
-                end_row = self._next_row + len(rows) - 1
-                range_str = f'A{self._next_row}:N{end_row}'
-                with concurrent.futures.ThreadPoolExecutor(max_workers=1) as ex:
-                    fut = ex.submit(
-                        self.worksheet.update, range_str, rows,
-                        value_input_option='USER_ENTERED'
-                    )
-                    try:
-                        fut.result(timeout=_SHEETS_TIMEOUT)
-                    except concurrent.futures.TimeoutError:
-                        raise TimeoutError(
-                            f'Sheets update が{_SHEETS_TIMEOUT}秒でタイムアウト'
-                        )
-                self._next_row += len(rows)
+                # 書き込み直前に毎回実シートの最終行を読み直し、必ずその直後に追記する。
+                # キャッシュ値を信用するとaudit削除や手動編集でズレるため（根本対策）。
+                start_row = self._compute_next_row()
+                end_row = start_row + len(rows) - 1
+                range_str = f'A{start_row}:N{end_row}'
+                self._call_with_timeout(
+                    self.worksheet.update, range_str, rows,
+                    value_input_option='USER_ENTERED'
+                )
+                self._next_row = end_row + 1
                 self._batch.clear()
                 self._last_flush = datetime.now()
-                logging.info(f'Sheets書き込み: {len(rows)}件 (行{start_row}〜{start_row + len(rows) - 1})')
+                logging.info(f'Sheets書き込み: {len(rows)}件 (行{start_row}〜{end_row})')
                 return [(name, start_row + i) for i, name in enumerate(names)]
 
             except TimeoutError as e:
