@@ -64,6 +64,39 @@ def is_blocked_domain(domain: str) -> bool:
     return any(domain == b or domain.endswith('.' + b) for b in blocked)
 
 
+# 構造的に会社名・電話番号が取れないドメイン（短縮URL/メッセージアプリ/アプリストア/
+# SNSプロフィール等）。広告のクリック先がこれらだと実LPへ到達できず、_fetch が
+# リダイレクト連鎖やアプリ誘導で 120 秒タイムアウトを起こし Processor を詰まらせる。
+# find_company_info を呼ぶ前に即スキップしてスループットを守る。
+_NON_LP_DOMAINS = frozenset({
+    # 短縮URL（リダイレクトのみ・会社情報なし）
+    'bit.ly', 'bitly.com', 't.co', 'goo.gl', 'tinyurl.com', 'ow.ly', 'buff.ly',
+    'is.gd', 'cutt.ly', 'rebrand.ly', 'lnkd.in', 'shorturl.at', 'x.gd', 'rip.to',
+    # Microsoft / Apple / Google の中間リンク（同意ページ・アプリ配布等）
+    'aka.ms', 'apps.apple.com', 'itunes.apple.com', 'play.google.com',
+    'g.page', 'forms.gle', 'maps.app.goo.gl', 'qr.paps.jp',
+    # メッセージアプリ誘導（実LPではなくアプリを開かせる）
+    'lin.ee', 'line.me', 'wa.me', 't.me', 'm.me', 'telegram.me',
+    # SNS / リンク集プロフィール（既存 blocked_domains 未収録分を補完）
+    'x.com', 'threads.net', 'pinterest.com', 'pinterest.jp', 'linkedin.com',
+    'linktr.ee', 'lit.link', 'profcard.info',
+})
+
+
+def is_non_lp_url(lp_url: str) -> bool:
+    """実LPに到達できない構造的な非LPドメインか判定する。
+    get_base_domain はサブドメインを登録ドメインへ畳む（apps.apple.com→apple.com）ため、
+    判定は URL の生ホスト名で行う。"""
+    from urllib.parse import urlparse
+    try:
+        host = (urlparse(lp_url).hostname or '').lower()
+    except Exception:
+        return False
+    if not host:
+        return False
+    return any(host == b or host.endswith('.' + b) for b in _NON_LP_DOMAINS)
+
+
 # ─────────────────────────────────────────────
 # THREAD 2: 情報取得・解析（並列処理）
 # ─────────────────────────────────────────────
@@ -97,6 +130,12 @@ def _process_one_lp(item: dict, conn=None) -> Optional[dict]:
         return None
 
     base_domain = get_base_domain(lp_url)
+
+    # 短縮URL/メッセージアプリ/アプリストア等は実LPに到達できず 120 秒タイムアウトの
+    # 主因になるため、重い find_company_info を呼ぶ前に即スキップする。
+    if is_non_lp_url(lp_url):
+        logging.debug(f'[Processor] 非LPドメインをスキップ: {lp_url}')
+        return None
 
     if is_blocked_domain(base_domain):
         logging.debug(f'[Processor] ブロック済みドメイン: {base_domain}')
